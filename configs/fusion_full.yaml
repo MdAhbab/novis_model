@@ -1,0 +1,8 @@
+# Stage C: joint fusion on the mixed corpus with modality dropout 0.3.
+# Initialize from Stage A/B weights by passing the checkpoint to train.py
+# (or start from scratch for ablation).
+inherit: base.yaml
+
+train:
+  epochs: 40
+  modality_dropout: 0.3

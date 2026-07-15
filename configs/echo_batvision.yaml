@@ -1,0 +1,7 @@
+# Stage B: acoustic pretraining on BatVision (+ SoundSpaces renders).
+# Thermal is absent in these shards.
+inherit: base.yaml
+
+train:
+  epochs: 40
+  modality_dropout: 0.0

@@ -1,0 +1,22 @@
+# Base config: architecture per NOVIS/docs/methodology.md Section 5.1.
+model:
+  dim: 128
+  depth: 6
+  heads: 4
+  decoder_chs: [96, 64, 48]
+
+train:
+  epochs: 40
+  batch_size: 64
+  lr: 3.0e-4
+  weight_decay: 0.05
+  warmup_steps: 500
+  amp: true                # bfloat16 autocast on CUDA
+  workers: 4
+  modality_dropout: 0.3
+  lambda_depth: 1.0
+  lambda_color: 0.5
+
+data:
+  synthetic_train_n: 2048
+  synthetic_val_n: 256

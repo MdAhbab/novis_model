@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/*
+!data/raw/README.md
+data/processed/
+data/real_capture/
+checkpoints/
+results/
+*.onnx

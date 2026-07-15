@@ -1,0 +1,8 @@
+# Stage A: thermal pretraining on LLVIP (+ FLIR/KAIST/M3FD shards if prepared).
+# Echo and sonar are absent in these shards; their mask flags are 0 and the
+# model learns from thermal alone via the mask-token path.
+inherit: base.yaml
+
+train:
+  epochs: 60
+  modality_dropout: 0.0    # masks already encode absence in the shards

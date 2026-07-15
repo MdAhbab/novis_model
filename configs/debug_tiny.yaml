@@ -1,0 +1,14 @@
+# Tiny synthetic run to verify the full train/eval/export loop end to end.
+# Finishes in a few minutes on CPU; seconds on the 5070 Ti.
+inherit: base.yaml
+
+train:
+  epochs: 2
+  batch_size: 32
+  warmup_steps: 20
+  workers: 0
+  modality_dropout: 0.3
+
+data:
+  synthetic_train_n: 256
+  synthetic_val_n: 64

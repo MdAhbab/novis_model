@@ -1,0 +1,17 @@
+# Core (torch is installed separately -- see README.md for the CUDA 12.8 command)
+numpy>=1.26
+pyyaml>=6.0
+pillow>=10.0
+tqdm>=4.66
+
+# Export to ONNX (needed only for export.py)
+onnx>=1.16
+onnxscript>=0.1
+onnxruntime>=1.18
+
+# Host receiver / live inference (host/)
+cryptography>=42.0     # ChaCha20-Poly1305 AEAD
+bleak>=0.22            # cross-platform BLE client (live --source ble only)
+
+# Optional: perceptual metric for eval (used only if installed)
+# lpips>=0.1.4
