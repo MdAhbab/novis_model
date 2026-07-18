@@ -5,20 +5,33 @@ import torch.nn as nn
 
 
 class ThermalStem(nn.Module):
-    """(B,1,24,32) -> (B, 192, D) grid tokens via 2x2 patch embedding."""
+    """(B,1,24,32) -> grid tokens (B, 192, D) plus a full-resolution skip map.
+
+    A 3x3 conv lifts the frame to D/2 channels at 24x32; that feature map is
+    returned as a decoder skip connection. A strided 2x2 conv then embeds it
+    into 12x16 grid tokens.
+    """
 
     def __init__(self, dim: int, grid_hw=(12, 16)):
         super().__init__()
         self.grid_h, self.grid_w = grid_hw
-        self.proj = nn.Conv2d(1, dim, kernel_size=2, stride=2)
+        self.skip_ch = dim // 2
+        self.pre = nn.Sequential(
+            nn.Conv2d(1, self.skip_ch, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(self.skip_ch, self.skip_ch, 3, padding=1),
+            nn.GELU(),
+        )
+        self.proj = nn.Conv2d(self.skip_ch, dim, kernel_size=2, stride=2)
         self.pos = nn.Parameter(
             torch.zeros(1, self.grid_h * self.grid_w, dim))
         nn.init.trunc_normal_(self.pos, std=0.02)
 
     def forward(self, x):
-        t = self.proj(x)                          # (B, D, 12, 16)
+        skip = self.pre(x)                        # (B, D/2, 24, 32)
+        t = self.proj(skip)                       # (B, D, 12, 16)
         t = t.flatten(2).transpose(1, 2)          # (B, 192, D)
-        return t + self.pos
+        return t + self.pos, skip
 
 
 class EchoStem(nn.Module):
@@ -34,19 +47,20 @@ class EchoStem(nn.Module):
                 nn.BatchNorm2d(cout),
                 nn.GELU(),
             )
+        base = max(32, dim // 8)
         self.net = nn.Sequential(
-            nn.Conv2d(2, 32, 3, stride=2, padding=1),   # 32x32
+            nn.Conv2d(2, base, 3, stride=2, padding=1),      # 32x32
             nn.GELU(),
-            dsc(32, 64, 2),                              # 16x16
-            dsc(64, dim, 2),                             # 8x8
+            dsc(base, base * 2, 2),                          # 16x16
+            dsc(base * 2, dim, 2),                           # 8x8
         )
-        self.pool = nn.AdaptiveAvgPool2d((4, 6))         # 24 tokens
+        self.pool = nn.AdaptiveAvgPool2d((4, 6))             # 24 tokens
         self.pos = nn.Parameter(torch.zeros(1, n_tokens, dim))
         nn.init.trunc_normal_(self.pos, std=0.02)
 
     def forward(self, x):
-        f = self.pool(self.net(x))                       # (B, D, 4, 6)
-        f = f.flatten(2).transpose(1, 2)                 # (B, 24, D)
+        f = self.pool(self.net(x))                           # (B, D, 4, 6)
+        f = f.flatten(2).transpose(1, 2)                     # (B, 24, D)
         return f + self.pos
 
 

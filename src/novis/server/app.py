@@ -1,0 +1,145 @@
+"""FastAPI app: serves NOVISNet and the built React frontend.
+
+Run from NOVIS_Model (run.py does this for you):
+  uvicorn novis.server.app:app --port 8000
+
+Environment:
+  NOVIS_CONFIG  config path relative to NOVIS_Model (default configs/base.yaml)
+  NOVIS_CKPT    checkpoint path (default: newest checkpoints/*/best.pt)
+  NOVIS_DEVICE  cuda | cpu (default: auto)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .service import InferenceService, ROOT
+
+app = FastAPI(title="NOVIS", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+_service: InferenceService | None = None
+
+
+def service() -> InferenceService:
+    global _service
+    if _service is None:
+        _service = InferenceService(
+            config=os.environ.get("NOVIS_CONFIG", "configs/base.yaml"),
+            ckpt=os.environ.get("NOVIS_CKPT") or None,
+            device=os.environ.get("NOVIS_DEVICE") or None)
+    return _service
+
+
+class InferRequest(BaseModel):
+    sample_id: int | None = None
+    seed: int | None = None
+    mask: list[bool] | None = None      # [thermal, echo, sonar] override
+
+
+@app.get("/api/model")
+def api_model():
+    return service().model_info()
+
+
+@app.get("/api/samples")
+def api_samples():
+    return {"samples": service().sample_summaries()}
+
+
+@app.post("/api/infer")
+def api_infer(req: InferRequest):
+    svc = service()
+    sample = svc.demo_sample(req.sample_id, req.seed)
+    if req.mask is not None:
+        sample = {**sample,
+                  "mask": np.asarray([1.0 if v else 0.0 for v in req.mask],
+                                     np.float32)}
+    return {
+        "inputs": svc.render_inputs(sample),
+        "truth": svc.render_truth(sample),
+        "outputs": svc.infer(sample),
+    }
+
+
+@app.post("/api/infer/upload")
+async def api_infer_upload(file: UploadFile):
+    """Run on an uploaded .npz with thermal/echo/sonar (and optional mask)."""
+    svc = service()
+    raw = await file.read()
+    try:
+        z = np.load(io.BytesIO(raw))
+    except Exception:
+        raise HTTPException(400, "not a readable .npz file")
+    sample = {
+        "thermal": np.zeros((1, 24, 32), np.float32),
+        "echo": np.zeros((2, 64, 64), np.float32),
+        "sonar": np.zeros(10, np.float32),
+        "mask": np.zeros(3, np.float32),
+    }
+    names = set(z.files)
+    for i, key in enumerate(("thermal", "echo", "sonar")):
+        if key in names:
+            a = np.asarray(z[key], np.float32)
+            if a.shape != sample[key].shape:
+                raise HTTPException(
+                    400, f"{key} must have shape {sample[key].shape}, "
+                         f"got {tuple(a.shape)}")
+            sample[key] = a
+            sample["mask"][i] = 1.0
+    if "mask" in names:
+        sample["mask"] = np.asarray(z["mask"], np.float32).reshape(3)
+    if sample["mask"].sum() == 0:
+        raise HTTPException(400, "npz contains none of thermal/echo/sonar")
+    return {
+        "inputs": svc.render_inputs(sample),
+        "truth": None,
+        "outputs": svc.infer(sample),
+    }
+
+
+@app.get("/api/runs")
+def api_runs():
+    return {"runs": service().list_runs(),
+            "results": service().results_metrics()}
+
+
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket):
+    """Streams the animated demo scene through the model."""
+    await ws.accept()
+    svc = service()
+    t0 = time.perf_counter()
+    try:
+        while True:
+            t = time.perf_counter() - t0
+            sample = svc.animated_sample(t)
+            frame = await asyncio.to_thread(svc.infer, sample)
+            frame["t"] = round(t, 2)
+            frame["thermal_png"] = svc.render_inputs(sample)["thermal_png"]
+            frame["truth_gray_png"] = svc.render_truth(sample)["gray_png"]
+            await ws.send_json(frame)
+            # Pace the stream; inference latency dominates on CPU.
+            await asyncio.sleep(max(0.05, 0.25 - frame["latency_ms"] / 1000.0))
+    except (WebSocketDisconnect, RuntimeError):
+        return
+
+
+# Serve the built frontend when it exists (python run.py builds it).
+_dist = ROOT / "frontend" / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="app")

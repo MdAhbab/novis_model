@@ -1,0 +1,20 @@
+# Future work: compact variant sized for phone-class edge inference.
+# Not used for the paper's results; kept so the edge deployment path can be
+# explored later (int8 quantization + mobile export) without redesigning.
+inherit: base.yaml
+
+model:
+  dim: 128
+  depth: 6
+  heads: 4
+  ffn_ratio: 3
+  drop_path: 0.0
+  decoder_chs: [96, 64, 48]          # 3 stages -> 96x128
+
+train:
+  batch_size: 64
+  lambda_perc: 0.0
+  lambda_adv: 0.0
+
+data:
+  out_hw: [96, 128]

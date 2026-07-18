@@ -10,6 +10,22 @@ import torch
 import torch.nn as nn
 
 
+class DropPath(nn.Module):
+    """Stochastic depth: drop the residual branch per sample."""
+
+    def __init__(self, p: float = 0.0):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.p == 0.0 or not self.training:
+            return x
+        keep = 1.0 - self.p
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = x.new_empty(shape).bernoulli_(keep)
+        return x * mask / keep
+
+
 class SqueezeExcite(nn.Module):
     def __init__(self, ch: int, r: int = 4):
         super().__init__()
@@ -57,7 +73,8 @@ class SandwichBlock(nn.Module):
     `grid_hw` marks which leading tokens form the spatial grid.
     """
 
-    def __init__(self, dim: int, heads: int, grid_hw: tuple, ffn_ratio: int = 3):
+    def __init__(self, dim: int, heads: int, grid_hw: tuple,
+                 ffn_ratio: int = 3, drop_path: float = 0.0):
         super().__init__()
         self.grid_h, self.grid_w = grid_hw
         self.n_grid = self.grid_h * self.grid_w
@@ -69,6 +86,7 @@ class SandwichBlock(nn.Module):
         self.ffn_in = nn.Linear(dim, hidden * 2)
         self.ffn_out = nn.Linear(hidden, dim)
         self.act = nn.GELU()
+        self.drop_path = DropPath(drop_path)
 
     def forward(self, tokens):
         # Local mixing on grid tokens only.
@@ -77,15 +95,15 @@ class SandwichBlock(nn.Module):
         rest = tokens[:, self.n_grid:, :]
         g = grid.transpose(1, 2).reshape(b, d, self.grid_h, self.grid_w)
         g = self.dw(g).flatten(2).transpose(1, 2)
-        tokens = torch.cat([grid + g, rest], dim=1)
+        tokens = torch.cat([grid + self.drop_path(g), rest], dim=1)
 
         # Global cross-modal attention.
         h = self.norm1(tokens)
         a, _ = self.attn(h, h, h, need_weights=False)
-        tokens = tokens + a
+        tokens = tokens + self.drop_path(a)
 
         # Gated FFN.
         h = self.norm2(tokens)
         u, v = self.ffn_in(h).chunk(2, dim=-1)
-        tokens = tokens + self.ffn_out(self.act(u) * v)
+        tokens = tokens + self.drop_path(self.ffn_out(self.act(u) * v))
         return tokens

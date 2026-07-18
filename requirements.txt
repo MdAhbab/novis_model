@@ -4,14 +4,20 @@ pyyaml>=6.0
 pillow>=10.0
 tqdm>=4.66
 
+# Training extras: perceptual loss (VGG16) and the LPIPS metric
+torchvision>=0.20
+lpips>=0.1.4
+
 # Export to ONNX (needed only for export.py)
 onnx>=1.16
 onnxscript>=0.1
 onnxruntime>=1.18
 
+# Browser interface (run.py serves the model to the React frontend)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
 # Host receiver / live inference (host/)
 cryptography>=42.0     # ChaCha20-Poly1305 AEAD
 bleak>=0.22            # cross-platform BLE client (live --source ble only)
-
-# Optional: perceptual metric for eval (used only if installed)
-# lpips>=0.1.4

@@ -22,7 +22,8 @@ from novis.models import build_model  # noqa: E402
 
 
 def save_sample_grid(model, ds, device, out_png, n=6):
-    """Rows: thermal (upsampled), predicted gray, target gray, pred inv-depth."""
+    """Rows: thermal (upsampled), predicted gray, target gray, pred inv-depth,
+    target inv-depth."""
     from PIL import Image
     from novis.data import collate_batch
     model.eval()
@@ -35,7 +36,8 @@ def save_sample_grid(model, ds, device, out_png, n=6):
     rows = []
     thermal_up = torch.nn.functional.interpolate(
         batch["thermal"], size=(H, W), mode="nearest")
-    for row in (thermal_up, out["gray"], batch["gray"], out["inv_depth"]):
+    for row in (thermal_up, out["gray"], batch["gray"], out["inv_depth"],
+                batch["inv_depth"]):
         imgs = [row[i, 0].float().cpu().numpy() for i in range(row.shape[0])]
         rows.append(np.concatenate(imgs, axis=1))
     grid = (np.clip(np.concatenate(rows, axis=0), 0, 1) * 255).astype(np.uint8)
@@ -56,7 +58,8 @@ def main():
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.data == "synthetic":
-        val_ds = SyntheticNOVISDataset(n=cfg.data.synthetic_val_n)
+        val_ds = SyntheticNOVISDataset(n=cfg.data.synthetic_val_n,
+                                       out_hw=tuple(cfg.data.out_hw))
     else:
         if not args.val_shards:
             ap.error("--data shards requires --val-shards")

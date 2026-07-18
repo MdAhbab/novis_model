@@ -146,3 +146,28 @@ def lab_targets(rgb: np.ndarray) -> tuple:
     gray = np.clip(lab[..., 0] / 100.0, 0.0, 1.0)
     ab = np.clip(lab[..., 1:] / 110.0, -1.0, 1.0)
     return gray.astype(np.float32), ab.astype(np.float32)
+
+
+_M_XYZ2RGB = np.linalg.inv(_M_RGB2XYZ).astype(np.float32)
+
+
+def lab_to_rgb(gray01: np.ndarray, ab: np.ndarray) -> np.ndarray:
+    """(gray [0,1] (H,W), ab [-1,1] (H,W,2)) -> sRGB float32 [0,1] (H,W,3).
+
+    Inverse of lab_targets; used to render the optional colorization view.
+    """
+    L = gray01.astype(np.float32) * 100.0
+    a = ab[..., 0].astype(np.float32) * 110.0
+    b = ab[..., 1].astype(np.float32) * 110.0
+    fy = (L + 16.0) / 116.0
+    fx = fy + a / 500.0
+    fz = fy - b / 200.0
+    def finv(f):
+        f3 = f ** 3
+        return np.where(f3 > 0.008856, f3, (f - 16.0 / 116.0) / 7.787)
+    xyz = np.stack([finv(fx), finv(fy), finv(fz)], axis=-1) * _WHITE
+    lin = xyz @ _M_XYZ2RGB.T
+    lin = np.clip(lin, 0.0, None)
+    srgb = np.where(lin <= 0.0031308, 12.92 * lin,
+                    1.055 * np.power(lin, 1.0 / 2.4) - 0.055)
+    return np.clip(srgb, 0.0, 1.0).astype(np.float32)

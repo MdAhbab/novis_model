@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from novis.data import degradation as D  # noqa: E402
 
-OUT_H, OUT_W = 96, 128
+OUT_H, OUT_W = 192, 256      # must match data.out_hw in the training config
 SHARD = 512
 
 

@@ -1,16 +1,17 @@
 """Datasets.
 
 Sample dict layout (all float32 numpy in the dataset, torch tensors after
-collate):
+collate); H x W is the configured output resolution (data.out_hw, default
+192 x 256):
 
   thermal      (1, 24, 32)   [0,1], zeros if absent
   echo         (2, 64, 64)   [0,1], zeros if absent
   sonar        (10,)         2 ranges + 2 valid flags + 4+2 history slots
   mask         (3,)          [thermal, echo, sonar] presence flags
-  gray         (1, 96, 128)  target luminance [0,1]
-  ab           (2, 96, 128)  target chrominance [-1,1]
-  inv_depth    (1, 96, 128)  target normalized inverse depth [0,1]
-  depth_valid  (1, 96, 128)  1 where inv_depth is supervised
+  gray         (1, H, W)     target luminance [0,1]
+  ab           (2, H, W)     target chrominance [-1,1]
+  inv_depth    (1, H, W)     target normalized inverse depth [0,1]
+  depth_valid  (1, H, W)     1 where inv_depth is supervised
 """
 
 from pathlib import Path
@@ -21,7 +22,7 @@ from torch.utils.data import Dataset
 
 from . import degradation as D
 
-OUT_H, OUT_W = 96, 128
+OUT_H, OUT_W = 192, 256
 SONAR_DIM = 10
 KEYS = ["thermal", "echo", "sonar", "mask", "gray", "ab", "inv_depth", "depth_valid"]
 
@@ -37,7 +38,8 @@ def collate_batch(samples):
 class NOVISShardDataset(Dataset):
     """Reads .npz shards produced by the scripts/prepare_*.py tools.
 
-    Each shard holds arrays named per KEYS with a leading sample axis.
+    Each shard holds arrays named per KEYS with a leading sample axis. The
+    target resolution is whatever the shards were prepared at.
     """
 
     def __init__(self, shard_dir: str):
@@ -51,6 +53,8 @@ class NOVISShardDataset(Dataset):
             with np.load(f) as z:
                 n = z["gray"].shape[0]
             self._index.extend((fi, j) for j in range(n))
+        with np.load(self.files[0]) as z:
+            self.out_hw = tuple(z["gray"].shape[-2:])
 
     def __len__(self):
         return len(self._index)
@@ -64,7 +68,7 @@ class NOVISShardDataset(Dataset):
 
 
 class SyntheticNOVISDataset(Dataset):
-    """Procedural scenes for smoke tests and pipeline debugging.
+    """Procedural scenes for smoke tests, pipeline debugging, and UI demos.
 
     Each index deterministically generates a room-like scene: a background
     with a depth gradient plus 1-4 warm rectangular objects. Thermal, echo,
@@ -73,16 +77,19 @@ class SyntheticNOVISDataset(Dataset):
     paper; it exists so the code path can be exercised without downloads.
     """
 
-    def __init__(self, n: int = 256, modality_dropout: float = 0.0):
+    def __init__(self, n: int = 256, modality_dropout: float = 0.0,
+                 out_hw=(OUT_H, OUT_W), seed: int = 1234):
         self.n = n
         self.modality_dropout = modality_dropout
+        self.out_hw = tuple(out_hw)
+        self.seed = seed
 
     def __len__(self):
         return self.n
 
     def __getitem__(self, i):
-        rng = np.random.default_rng(1234 + i)
-        H, W = OUT_H, OUT_W
+        rng = np.random.default_rng(self.seed + i)
+        H, W = self.out_hw
 
         # Background: horizontal luminance ramp, depth ramp back-to-front.
         yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)

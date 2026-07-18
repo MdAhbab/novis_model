@@ -1,4 +1,8 @@
-"""Export a trained NOVISNet to ONNX (opset 17) for phone deployment.
+"""Export a trained NOVISNet to ONNX for portable inference.
+
+The exported graph is a research artifact: it lets the reconstruction run
+under onnxruntime on machines without PyTorch and is the starting point for
+the future edge-deployment work (quantization, mobile runtimes).
 
 Example:
   python export.py --config configs/fusion_full.yaml ^
@@ -29,10 +33,13 @@ class ExportWrapper(torch.nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        self.color = model.color_head
 
     def forward(self, thermal, echo, sonar, mask):
         out = self.model(thermal, echo, sonar, mask)
-        return out["gray"], out["inv_depth"], out["ab"], out["log_var"]
+        if self.color:
+            return (out["gray"], out["inv_depth"], out["ab"], out["log_var"])
+        return (out["gray"], out["inv_depth"])
 
 
 def main():
@@ -49,14 +56,18 @@ def main():
     wrapper = ExportWrapper(model)
     wrapper.eval()
 
-    # Batch is fixed at 1: the phone runs one frame at a time.
+    out_names = ["gray", "inv_depth"]
+    if wrapper.color:
+        out_names += ["ab", "log_var"]
+
+    # Batch is fixed at 1: the host serves one sensor frame at a time.
     dummy = (torch.zeros(1, 1, 24, 32), torch.zeros(1, 2, 64, 64),
              torch.zeros(1, 10), torch.ones(1, 3))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         wrapper, dummy, args.out, opset_version=18,
         input_names=["thermal", "echo", "sonar", "mask"],
-        output_names=["gray", "inv_depth", "ab", "log_var"])
+        output_names=out_names)
     print(f"exported: {args.out}")
 
     try:

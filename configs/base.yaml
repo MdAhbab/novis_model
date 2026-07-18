@@ -1,22 +1,32 @@
-# Base config: architecture per NOVIS/docs/methodology.md Section 5.1.
+# Base config: NOVISNet-B, the workstation research model (RTX 5070 Ti).
+# Architecture per NOVIS/docs/methodology.md Section 5.1.
 model:
-  dim: 128
-  depth: 6
-  heads: 4
-  decoder_chs: [96, 64, 48]
+  dim: 320
+  depth: 14
+  heads: 8
+  ffn_ratio: 4
+  drop_path: 0.1
+  decoder_chs: [320, 224, 160, 112]  # 4 stages: 12x16 tokens -> 192x256
+  color_head: true                   # optional colorization heads (ab + confidence)
 
 train:
   epochs: 40
-  batch_size: 64
-  lr: 3.0e-4
+  batch_size: 32
+  accum_steps: 1
+  lr: 2.0e-4
   weight_decay: 0.05
-  warmup_steps: 500
+  warmup_steps: 1000
   amp: true                # bfloat16 autocast on CUDA
-  workers: 4
+  compile: false           # torch.compile (Linux CUDA only; leave off on Windows)
+  ema_decay: 0.999
+  workers: 8
   modality_dropout: 0.3
   lambda_depth: 1.0
   lambda_color: 0.5
+  lambda_perc: 0.1         # VGG16 perceptual term on grayscale
+  lambda_adv: 0.0          # PatchGAN adversarial term (fusion stage only)
 
 data:
+  out_hw: [192, 256]
   synthetic_train_n: 2048
   synthetic_val_n: 256

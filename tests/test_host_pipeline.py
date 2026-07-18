@@ -81,7 +81,8 @@ def test_assembled_input_runs_through_model():
     assert tuple(x["mask"][0].tolist()) == (1.0, 1.0, 1.0)
 
     torch.manual_seed(0)
-    model = NOVISNet(dim=128, depth=6, heads=4, decoder_chs=(96, 64, 48)).eval()
+    model = NOVISNet(dim=96, depth=3, heads=4, decoder_chs=(96, 64, 48),
+                     ffn_ratio=2).eval()
     with torch.no_grad():
         out = model(x["thermal"], x["echo"], x["sonar"], x["mask"])
     assert out["gray"].shape == (1, 1, 96, 128)

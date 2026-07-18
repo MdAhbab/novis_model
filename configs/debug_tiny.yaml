@@ -1,14 +1,25 @@
 # Tiny synthetic run to verify the full train/eval/export loop end to end.
-# Finishes in a few minutes on CPU; seconds on the 5070 Ti.
+# Small dims and 96x128 output so it finishes in minutes on CPU.
 inherit: base.yaml
+
+model:
+  dim: 96
+  depth: 3
+  heads: 4
+  ffn_ratio: 2
+  drop_path: 0.0
+  decoder_chs: [96, 64, 48]          # 3 stages -> 96x128
 
 train:
   epochs: 2
-  batch_size: 32
+  batch_size: 16
   warmup_steps: 20
   workers: 0
   modality_dropout: 0.3
+  lambda_perc: 0.0                   # keep the debug loop dependency-light
+  lambda_adv: 0.0
 
 data:
+  out_hw: [96, 128]
   synthetic_train_n: 256
   synthetic_val_n: 64
