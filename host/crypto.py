@@ -10,6 +10,7 @@ Requires the `cryptography` package (pip install cryptography).
 from __future__ import annotations
 
 import struct
+import logging
 
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
@@ -24,6 +25,9 @@ class Session:
             raise ValueError("key must be 32 bytes")
         if len(salt) != P.SALT_BYTES:
             raise ValueError("salt must be 4 bytes")
+        if key == b"\x00" * P.KEY_BYTES and salt == b"\x00" * P.SALT_BYTES:
+            logging.warning("SECURITY: Using placeholder all-zero AEAD key and salt. "
+                            "Do not use in production!")
         self._aead = ChaCha20Poly1305(key)
         self._salt = salt
 

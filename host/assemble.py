@@ -60,6 +60,11 @@ class FrameAssembler:
             self._sonar = vec
             self.seen["sonar"] = True
 
+    def reset(self) -> None:
+        self.seen = {"thermal": False, "echo": False, "sonar": False}
+        self._thermal = None
+        self._sonar = None
+
     def ready(self) -> bool:
         """At least one modality has arrived."""
         return any(self.seen.values())
@@ -85,5 +90,7 @@ class FrameAssembler:
             mask[2] = 1.0
 
         to = lambda a: torch.from_numpy(a).unsqueeze(0).to(self.device)
-        return {"thermal": to(thermal), "echo": to(echo),
+        out = {"thermal": to(thermal), "echo": to(echo),
                 "sonar": to(sonar), "mask": to(mask)}
+        self.reset()
+        return out

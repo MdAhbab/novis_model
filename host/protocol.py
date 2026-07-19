@@ -87,15 +87,23 @@ def fragment(msg: bytes, msg_id: int) -> list[bytes]:
 class Reassembler:
     """Collects fragments by msg_id and returns a full message when complete."""
 
-    def __init__(self):
+    def __init__(self, max_pending: int = 16):
         self._parts: dict[int, dict[int, bytes]] = {}
         self._counts: dict[int, int] = {}
+        self._max_pending = max_pending
 
     def push(self, chunk: bytes) -> bytes | None:
         if len(chunk) < FRAG_HEADER_BYTES:
             return None
         msg_id, idx, count = struct.unpack_from("<HBB", chunk, 0)
         data = chunk[FRAG_HEADER_BYTES:]
+        
+        # Evict old pending messages if we exceed the limit to prevent memory leaks
+        if msg_id not in self._parts and len(self._parts) >= self._max_pending:
+            oldest = next(iter(self._parts))
+            del self._parts[oldest]
+            del self._counts[oldest]
+
         parts = self._parts.setdefault(msg_id, {})
         parts[idx] = data
         self._counts[msg_id] = count
