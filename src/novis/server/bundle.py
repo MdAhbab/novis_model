@@ -1,11 +1,17 @@
 """Create and load portable model bundles.
 
-A bundle is a zip file containing everything needed to serve NOVISNet on
-another machine without cloning the repository:
+A bundle is a zip file that carries a trained NOVISNet between machines:
 
-  config.yaml     flattened, resolved config (no ``inherit:`` chain)
-  weights.pt      EMA model weights (the ``best.pt`` format)
-  metadata.json   parameter count, device, export timestamp, git hash
+  config.yaml       flattened, resolved config (no ``inherit:`` chain)
+  weights.pt        EMA model weights (the ``best.pt`` format)
+  metadata.json     parameter count, versions, export timestamp, git hash
+  src/novis/...     the serving code
+  bundle_cli.py     the CLI, so the bundle can serve itself
+  requirements.txt  the Python dependencies
+
+The target machine needs Python and the packages in requirements.txt
+(torch, numpy, pyyaml, pillow, fastapi, uvicorn), not a repository clone:
+unzip the bundle and run the embedded CLI next to the extracted ``src/``.
 
 Usage from code:
     from novis.server.bundle import create_bundle, load_bundle
@@ -13,30 +19,37 @@ Usage from code:
     config_path, ckpt_path = load_bundle(Path("novis_bundle.zip"))
 
 Usage from CLI:
-    python bundle_cli.py --config ... --ckpt ... --out novis_bundle.zip
-    python bundle_cli.py --load novis_bundle.zip --serve
+    python bundle_cli.py export --config configs/fusion_full.yaml \
+        --ckpt checkpoints/fusion_full/best.pt --out novis_bundle.zip
+    python bundle_cli.py load novis_bundle.zip --serve
+    python bundle_cli.py load novis_bundle.zip --check
 """
 
 from __future__ import annotations
 
 import json
+import os
+import platform
 import subprocess
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 
 from novis.config import namespace_to_dict
+
+_REPO = Path(__file__).resolve().parents[3]
 
 
 def _git_hash() -> str | None:
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=5, cwd=str(_REPO))
         if out.returncode == 0:
             return out.stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -60,13 +73,19 @@ def create_bundle(service, out_path: Path) -> Path:
     # Flatten config to a plain dict (no inherit chain).
     cfg_dict = namespace_to_dict(service.cfg)
 
-    # Model weights: prefer continual checkpoint if available, then EMA.
-    if service._continual is not None:
-        weights = service._continual.shadow
-        source = "continual"
-    else:
-        weights = service.model.state_dict()
-        source = service.ckpt_path or "untrained"
+    # Snapshot the weights under the service lock so a concurrent
+    # continual-learning step cannot mutate them mid-serialization.
+    with service._lock:
+        if service._continual is not None:
+            weights = {k: v.detach().clone()
+                       for k, v in service._continual.shadow.items()}
+            source = "continual"
+            corrections = service._continual.corrections
+        else:
+            weights = {k: v.detach().clone()
+                       for k, v in service.model.state_dict().items()}
+            source = service.ckpt_path or "untrained"
+            corrections = None
 
     metadata = {
         "name": "NOVISNet",
@@ -77,11 +96,17 @@ def create_bundle(service, out_path: Path) -> Path:
         "trained": service.trained,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "git_hash": _git_hash(),
+        "torch_version": torch.__version__,
+        "numpy_version": np.__version__,
+        "python_version": platform.python_version(),
     }
-    if service._continual is not None:
-        metadata["continual_corrections"] = service._continual.corrections
+    if corrections is not None:
+        metadata["continual_corrections"] = corrections
 
-    # Write everything to a temporary directory, then zip.
+    # Write everything to a temporary directory, zip it beside the target,
+    # then move it into place atomically so a crash or a concurrent export
+    # never leaves a truncated zip at the final path.
+    tmp_zip = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         with open(tmp / "config.yaml", "w", encoding="utf-8") as f:
@@ -90,9 +115,19 @@ def create_bundle(service, out_path: Path) -> Path:
         with open(tmp / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in tmp.iterdir():
                 zf.write(p, p.name)
+            # Serving code, so the bundle runs without a repository clone.
+            pkg_root = _REPO / "src" / "novis"
+            if pkg_root.exists():
+                for p in sorted(pkg_root.rglob("*.py")):
+                    zf.write(p, p.relative_to(_REPO).as_posix())
+            for name in ("bundle_cli.py", "requirements.txt"):
+                p = _REPO / name
+                if p.exists():
+                    zf.write(p, name)
+    os.replace(tmp_zip, out_path)
 
     return out_path
 

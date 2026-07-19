@@ -35,6 +35,4 @@ continual:
   lr: 1.0e-5
   ema_decay: 0.999
   save_every: 10       # auto-checkpoint every N corrections
-  lambda_depth: 0.5
-  lambda_color: 0.0    # no color feedback by default
-  lambda_perc: 0.0     # no perceptual loss during continual (speed)
+  lambda_depth: 0.5    # depth term weight when a depth target is supplied

@@ -16,14 +16,19 @@ import io
 import os
 import time
 import threading
+import uuid
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (Depends, FastAPI, Form, Header, HTTPException,
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
+
+from novis.data import degradation as D
 
 from .service import InferenceService, ROOT
 
@@ -128,12 +133,27 @@ def api_runs():
 
 # -------------------------------------------------------- continual learning
 
-@app.post("/api/continual/enable")
+def _require_novis_header(x_novis: str | None = Header(None)):
+    """Require a custom header on state-mutating endpoints.
+
+    A custom header turns a cross-origin request into one that needs a
+    CORS preflight, which the CORS policy above rejects for foreign
+    origins. Without this, a malicious page open in the operator's browser
+    could mutate the served model with a simple form POST.
+    """
+    if x_novis is None:
+        raise HTTPException(
+            403, "missing X-Novis header; send 'X-Novis: 1' with this request")
+
+
+@app.post("/api/continual/enable",
+          dependencies=[Depends(_require_novis_header)])
 def api_continual_enable():
     return service().enable_continual()
 
 
-@app.post("/api/continual/disable")
+@app.post("/api/continual/disable",
+          dependencies=[Depends(_require_novis_header)])
 def api_continual_disable():
     return service().disable_continual()
 
@@ -143,28 +163,48 @@ def api_continual_status():
     return service().continual_status()
 
 
-@app.post("/api/continual/feedback")
-async def api_continual_feedback(file: UploadFile):
-    """Accept a ground-truth grayscale image for the most recent inference.
+@app.post("/api/continual/feedback",
+          dependencies=[Depends(_require_novis_header)])
+async def api_continual_feedback(file: UploadFile,
+                                 infer_id: str | None = Form(None)):
+    """Accept a ground-truth photograph for the most recent inference.
 
-    The image is resized to match the model output resolution and used for
-    one supervised gradient step. Accepts PNG, JPEG, or any PIL-readable
-    format. The image is converted to single-channel grayscale and normalized
-    to [0, 1].
+    Accepts PNG, JPEG, or any PIL-readable format. The image is EXIF
+    orientation corrected, center-cropped to the output aspect ratio,
+    resized to the output resolution, and converted to the same CIELAB
+    L* luminance target the model was trained on. Pass the ``infer_id``
+    returned by the inference being corrected to guard against pairing
+    the photograph with a newer inference.
     """
     svc = service()
     raw = await file.read()
     try:
-        from PIL import Image
-        im = Image.open(io.BytesIO(raw)).convert("L")
+        from PIL import Image, ImageOps
+        im = Image.open(io.BytesIO(raw))
+        im = ImageOps.exif_transpose(im).convert("RGB")
         H, W = svc.out_hw
-        if im.size != (W, H):
-            im = im.resize((W, H), Image.LANCZOS)
-        truth_gray = np.asarray(im, dtype=np.float32) / 255.0
+        # Center-crop to the output aspect ratio so the target is not
+        # anisotropically distorted, then resize.
+        w, h = im.size
+        if w * H > h * W:                       # wider than target
+            new_w = round(h * W / H)
+            x0 = (w - new_w) // 2
+            im = im.crop((x0, 0, x0 + new_w, h))
+        elif w * H < h * W:                     # taller than target
+            new_h = round(w * H / W)
+            y0 = (h - new_h) // 2
+            im = im.crop((0, y0, w, y0 + new_h))
+        im = im.resize((W, H), Image.Resampling.LANCZOS)
+        rgb = np.asarray(im, dtype=np.float32) / 255.0
+        # Same luminance definition as the training targets (CIELAB L*),
+        # not the ITU-R 601 luma of PIL's convert("L").
+        truth_gray = D.lab_targets(rgb)[0]
     except Exception:
         raise HTTPException(400, "could not read the image file")
     try:
-        result = svc.feedback(truth_gray)
+        # The gradient step is seconds of work; keep it off the event loop.
+        result = await asyncio.to_thread(
+            svc.feedback, truth_gray, None, infer_id)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     return result
@@ -172,17 +212,31 @@ async def api_continual_feedback(file: UploadFile):
 
 # -------------------------------------------------------- model bundle export
 
+def _remove_quiet(path: Path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 @app.get("/api/export/bundle")
 def api_export_bundle():
     """Download a portable zip bundle of the current model state."""
     from .bundle import create_bundle
     svc = service()
-    out_path = ROOT / "results" / "novis_bundle.zip"
+    if not svc.trained:
+        raise HTTPException(
+            409, "no trained checkpoint is loaded; refusing to export "
+                 "untrained weights")
+    # Per-request file: concurrent exports cannot truncate a zip that is
+    # still streaming to another client. Deleted after the response.
+    out_path = ROOT / "results" / f"novis_bundle_{uuid.uuid4().hex[:8]}.zip"
     create_bundle(svc, out_path)
     return FileResponse(
         path=str(out_path),
         media_type="application/zip",
         filename="novis_bundle.zip",
+        background=BackgroundTask(_remove_quiet, out_path),
     )
 
 
@@ -196,7 +250,9 @@ async def ws_live(ws: WebSocket):
         while True:
             t = time.perf_counter() - t0
             sample = svc.animated_sample(t)
-            frame = await asyncio.to_thread(svc.infer, sample)
+            # cache=False: synthetic live frames must never become the
+            # target of a continual-learning correction.
+            frame = await asyncio.to_thread(svc.infer, sample, None, False)
             frame["t"] = round(t, 2)
             frame["thermal_png"] = svc.render_inputs(sample)["thermal_png"]
             frame["truth_gray_png"] = svc.render_truth(sample)["gray_png"]

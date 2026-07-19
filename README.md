@@ -92,11 +92,67 @@ python run.py --config configs/debug_tiny.yaml
    perceptual and adversarial terms.
 5. Stage D (prototype fine-tune) runs after the real capture exists.
 
-Interrupted runs continue with `--resume checkpoints/<run>/latest.pt`.
-Training uses bfloat16 autocast, TF32, channels-last, fused AdamW, and an EMA
-of the weights; `best.pt` holds the EMA (release) weights and is what eval,
-export, and the server load. Batch 32 at 192x256 fits comfortably in the
-5070 Ti's 16 GB.
+Interrupted runs continue with `--resume checkpoints/<run>/latest.pt`; the
+trainer writes the full resumable state (model, EMA, optimizer, discriminator,
+epoch) at the end of every epoch, so an abrupt power loss costs at most one
+epoch. Training uses bfloat16 autocast, TF32, channels-last, fused AdamW, and
+an EMA of the weights; `best.pt` holds the EMA (release) weights and is what
+eval, export, and the server load (the server prefers the `ema` key when given
+a `latest.pt`). Batch 32 at 192x256 fits comfortably in the 5070 Ti's 16 GB.
+
+## Continual learning (deployment-time corrections)
+
+The server can refine the model while it serves, one correction at a time.
+The mode is off by default. State-mutating endpoints require the header
+`X-Novis: 1` (any value); without it a cross-site page in your browser could
+trigger them, since the server has no authentication.
+
+```bat
+curl -X POST -H "X-Novis: 1" http://127.0.0.1:8000/api/continual/enable
+curl http://127.0.0.1:8000/api/continual/status
+curl -X POST -H "X-Novis: 1" -F "file=@photo.jpg" -F "infer_id=<id>" http://127.0.0.1:8000/api/continual/feedback
+curl -X POST -H "X-Novis: 1" http://127.0.0.1:8000/api/continual/disable
+```
+
+Workflow: run an inference (the response carries an `infer_id`), photograph
+the real scene, and POST the photo to `/api/continual/feedback` with that
+`infer_id`. The server EXIF-corrects the photo, center-crops it to 4:3,
+resizes to 192x256, converts it to the CIELAB L* target the model was trained
+on, and runs exactly one low-learning-rate gradient step (AdamW, lr 1e-5,
+grad-norm clip 1.0) on the (sensor input, photo) pair. The model stays in
+eval mode during the step, so BatchNorm statistics never move. Each step is
+blended into an EMA (decay 0.999) and the server always serves the EMA, so a
+single bad photo cannot visibly damage the model. Passing `infer_id` is
+recommended: it rejects feedback whose paired input was already replaced by a
+newer inference (the live stream never becomes a feedback target).
+
+Every 10 corrections the EMA is saved to `checkpoints/continual/continual.pt`
+and reloaded the next time the mode is enabled, so corrections survive a
+server restart. Use feedback with real captures (`/api/infer/upload` or the
+host pipeline), not with synthetic demo scenes. Hyperparameters live under
+`continual:` in `configs/base.yaml`. No measured accuracy gains are claimed
+for this mode yet; treat it as an experimental mechanism.
+
+## Portable model bundles
+
+A bundle is one zip that moves a trained model to another machine: the
+resolved config (no `inherit:` chain), the EMA weights, a metadata record
+(param count, torch/numpy/python versions, export time, git hash), the
+`src/novis` serving code, this CLI, and `requirements.txt`. The target
+machine needs Python and `pip install -r requirements.txt`, not a repo clone.
+
+```bat
+python bundle_cli.py export --config configs/fusion_full.yaml --ckpt checkpoints/fusion_full/best.pt --out novis_bundle.zip
+python bundle_cli.py load novis_bundle.zip --check
+python bundle_cli.py load novis_bundle.zip --serve
+```
+
+On a machine without the repository: unzip the bundle with any zip tool and
+run the embedded `bundle_cli.py` from inside the extracted folder. The
+browser interface downloads the same bundle from `/api/export/bundle` (it
+refuses when only untrained weights are loaded). When continual learning is
+enabled, the bundle carries the continually-updated EMA and records the
+correction count in its metadata.
 
 ## Model at a glance
 
@@ -154,9 +210,10 @@ NOVIS_Model/
   firmware/novis_node/ nRF52840 node firmware skeleton
   host/               BLE receiver, AEAD, frame assembly, live inference
   tests/              smoke test + host pipeline test
-  train.py eval.py export.py
+  train.py eval.py export.py bundle_cli.py
   checkpoints/<run>/  best.pt latest.pt log.csv history.json
-  results/            metrics.json, samples/, exported ONNX
+  checkpoints/continual/  continual.pt (EMA + correction count)
+  results/            metrics.json, samples/, exported ONNX, bundle zips
 ```
 
 ## Future work

@@ -24,19 +24,20 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load_config(path: str) -> SimpleNamespace:
-    """Load a YAML config. If it has an `inherit:` key, merge onto that file."""
-    path = Path(path)
+def _load_dict(path: Path) -> dict:
+    """Load a YAML file, recursively resolving its `inherit:` chain."""
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     parent = cfg.pop("inherit", None)
     if parent:
-        parent_path = (path.parent / parent).resolve()
-        with open(parent_path, "r", encoding="utf-8") as f:
-            base = yaml.safe_load(f) or {}
-        base.pop("inherit", None)
+        base = _load_dict((path.parent / parent).resolve())
         cfg = _deep_merge(base, cfg)
-    return _to_namespace(cfg)
+    return cfg
+
+
+def load_config(path: str) -> SimpleNamespace:
+    """Load a YAML config. If it has an `inherit:` key, merge onto that file."""
+    return _to_namespace(_load_dict(Path(path)))
 
 
 def namespace_to_dict(ns) -> dict:

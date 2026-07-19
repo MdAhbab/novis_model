@@ -1,18 +1,23 @@
 """Bundle CLI: package or load a portable NOVIS model bundle.
 
-Export the current best checkpoint to a zip file that can be copied to a
-USB drive and loaded on another machine without cloning the repository:
+Export a checkpoint to a zip file that can be copied to a USB drive and
+served on another machine. The zip carries the serving code, so the target
+machine needs Python and the packages in requirements.txt, not a clone of
+the repository:
 
-  python bundle_cli.py --config configs/fusion_full.yaml \
+  python bundle_cli.py export --config configs/fusion_full.yaml \
       --ckpt checkpoints/fusion_full/best.pt --out novis_bundle.zip
 
 Load a bundle and start the server:
 
-  python bundle_cli.py --load novis_bundle.zip --serve
+  python bundle_cli.py load novis_bundle.zip --serve
 
-Load a bundle and run a single inference (no server):
+Load a bundle and run a single inference check (no server):
 
-  python bundle_cli.py --load novis_bundle.zip --check
+  python bundle_cli.py load novis_bundle.zip --check
+
+On a machine without the repository: unzip the bundle with any zip tool,
+then run the embedded copy of this script from inside the extracted folder.
 """
 
 import argparse
@@ -51,21 +56,24 @@ def main():
         from novis.server.service import InferenceService
         from novis.server.bundle import create_bundle
         svc = InferenceService(config=args.config, ckpt=args.ckpt)
+        if not svc.trained:
+            sys.exit(f"error: checkpoint {args.ckpt} did not load; "
+                     "refusing to export untrained weights")
         out = create_bundle(svc, Path(args.out))
         print(f"bundle created: {out} ({out.stat().st_size / 1e6:.1f} MB)")
 
     elif args.command == "load":
         from novis.server.bundle import load_bundle
-        bundle_dir = Path(args.bundle).with_suffix("") / "_extracted"
-        config_path, ckpt_path = load_bundle(Path(args.bundle), bundle_dir)
+        p = Path(args.bundle)
+        bundle_dir = p.with_name(p.stem + "_extracted")
+        config_path, ckpt_path = load_bundle(p, bundle_dir)
 
         if args.check:
-            import numpy as np
             from novis.server.service import InferenceService
             svc = InferenceService(
                 config=str(config_path), ckpt=str(ckpt_path))
             sample = svc.demo_sample(seed=42)
-            result = svc.infer(sample)
+            result = svc.infer(sample, cache=False)
             print(f"inference ok: latency {result['latency_ms']:.1f} ms, "
                   f"depth {result['depth_min_m']:.2f}-{result['depth_max_m']:.2f} m")
             return
