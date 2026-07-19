@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, memo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -21,7 +21,7 @@ const SERIES = {
   d_loss: "var(--series-3)",
 };
 
-function Curve(props: {
+const Curve = memo(function Curve(props: {
   title: string;
   rows: Record<string, number | string>[];
   keys: (keyof typeof SERIES)[];
@@ -87,7 +87,7 @@ function Curve(props: {
       </ResponsiveContainer>
     </Panel>
   );
-}
+});
 
 export default function Training() {
   const [data, setData] = useState<RunsResponse | null>(null);

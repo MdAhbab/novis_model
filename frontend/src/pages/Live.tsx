@@ -36,7 +36,12 @@ export default function Live() {
     setRunning(true);
   };
 
-  useEffect(() => stop, []);
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, []);
 
   return (
     <>
