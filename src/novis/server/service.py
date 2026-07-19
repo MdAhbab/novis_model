@@ -14,10 +14,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from novis.config import load_config, namespace_to_dict
 from novis.data import SyntheticNOVISDataset
 from novis.data import degradation as D
+from novis.losses import gray_loss, depth_loss, color_loss
 from novis.models import build_model
 
 from .render import blackbody, ocean, to_png_b64, turbo
@@ -33,6 +35,112 @@ def _candidate_checkpoints() -> list[Path]:
                    key=lambda p: p.stat().st_mtime, reverse=True)
     return ([p for p in ckpts if "fusion" in p.parent.name]
             + [p for p in ckpts if "fusion" not in p.parent.name])
+
+
+class ContinualLearner:
+    """Single-step supervised learner for deployment-time corrections.
+
+    Wraps a lightweight optimizer and EMA updater. Each call to ``step()``
+    runs one forward + backward pass on a (sensor input, ground truth) pair
+    and updates the model weights. The EMA shadow is updated after each step,
+    so the served weights (which come from the EMA) improve gradually.
+
+    Auto-saves ``continual.pt`` every ``save_every`` corrections.
+    """
+
+    def __init__(self, model, cfg, device: str, save_dir: Path):
+        c = cfg.continual
+        self.model = model
+        self.device = device
+        self.save_dir = save_dir
+        self.save_every = int(c.save_every)
+        self.lambda_d = float(c.lambda_depth)
+        self.lambda_c = float(c.lambda_color)
+
+        # Lightweight optimizer: low LR, no warmup, no accumulation.
+        self.opt = torch.optim.AdamW(
+            model.parameters(), lr=float(c.lr),
+            weight_decay=0.01, fused=(device == "cuda"))
+
+        self.ema_decay = float(c.ema_decay)
+        self.shadow = {k: v.detach().clone().float()
+                       for k, v in model.state_dict().items()}
+        self.corrections = 0
+
+    @torch.no_grad()
+    def _update_ema(self):
+        d = min(self.ema_decay,
+                (1.0 + self.corrections) / (10.0 + self.corrections))
+        for k, v in self.model.state_dict().items():
+            s = self.shadow[k]
+            if torch.is_floating_point(v):
+                s.mul_(d).add_(v.detach().float(), alpha=1.0 - d)
+            else:
+                s.copy_(v)
+
+    def _apply_ema(self):
+        """Load EMA weights into the model for serving."""
+        self.model.load_state_dict(self.shadow)
+
+    def _save(self):
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        torch.save({"model": self.shadow, "corrections": self.corrections},
+                   self.save_dir / "continual.pt")
+
+    def step(self, sample: dict, truth_gray: np.ndarray,
+             truth_depth: np.ndarray | None = None) -> dict:
+        """Run one gradient step on a correction pair.
+
+        Args:
+            sample: the sensor input dict (thermal, echo, sonar, mask).
+            truth_gray: H x W float32 array in [0, 1], the real photo.
+            truth_depth: optional H x W float32 inverse-depth array.
+
+        Returns:
+            dict with loss values and the correction count.
+        """
+        dev = self.device
+        to_t = lambda a: torch.from_numpy(
+            np.ascontiguousarray(a)).unsqueeze(0).to(dev)
+
+        self.model.train()
+        self.opt.zero_grad(set_to_none=True)
+
+        out = self.model(to_t(sample["thermal"]), to_t(sample["echo"]),
+                         to_t(sample["sonar"]), to_t(sample["mask"]))
+
+        target_gray = to_t(truth_gray[None])  # (1, 1, H, W)
+        loss = gray_loss(out["gray"], target_gray)
+
+        if truth_depth is not None and self.lambda_d > 0:
+            target_inv = to_t(truth_depth[None])
+            valid = (target_inv > 0).float()
+            loss = loss + self.lambda_d * depth_loss(
+                out["inv_depth"], target_inv, valid)
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        self.opt.step()
+        self._update_ema()
+        self.corrections += 1
+
+        # Switch back to EMA weights for serving.
+        self._apply_ema()
+        self.model.eval()
+
+        if self.corrections % self.save_every == 0:
+            self._save()
+
+        return {"loss": round(float(loss.detach()), 5),
+                "corrections": self.corrections}
+
+    def status(self) -> dict:
+        return {
+            "corrections": self.corrections,
+            "save_every": self.save_every,
+            "last_save": (self.corrections // self.save_every) * self.save_every
+                         if self.corrections >= self.save_every else None,
+        }
 
 
 class InferenceService:
@@ -66,6 +174,8 @@ class InferenceService:
         self._lock = threading.Lock()
         self._demo = SyntheticNOVISDataset(n=N_DEMO_SAMPLES,
                                            out_hw=self.out_hw, seed=7000)
+        self._continual: ContinualLearner | None = None
+        self._last_sample: dict | None = None
 
     # ------------------------------------------------------------- info
 
@@ -88,7 +198,47 @@ class InferenceService:
             "trained": self.trained,
             "config": self.config_path,
             "config_dump": namespace_to_dict(self.cfg),
+            "continual_enabled": self._continual is not None,
         }
+
+    # ------------------------------------------------- continual learning
+
+    def enable_continual(self) -> dict:
+        """Activate continual learning mode (low-LR online updates)."""
+        if self._continual is not None:
+            return {"status": "already_enabled",
+                    **self._continual.status()}
+        save_dir = ROOT / "checkpoints" / "continual"
+        self._continual = ContinualLearner(
+            self.model, self.cfg, self.device, save_dir)
+        return {"status": "enabled", **self._continual.status()}
+
+    def disable_continual(self) -> dict:
+        """Deactivate continual learning; model stays at its current state."""
+        if self._continual is None:
+            return {"status": "already_disabled"}
+        status = self._continual.status()
+        self._continual = None
+        return {"status": "disabled", **status}
+
+    def feedback(self, truth_gray: np.ndarray,
+                 truth_depth: np.ndarray | None = None) -> dict:
+        """Submit a ground-truth correction for the most recent inference."""
+        if self._continual is None:
+            raise RuntimeError("Continual learning is not enabled. "
+                               "Call /api/continual/enable first.")
+        if self._last_sample is None:
+            raise RuntimeError("No recent inference to correct. "
+                               "Run /api/infer first, then submit feedback.")
+        with self._lock:
+            result = self._continual.step(
+                self._last_sample, truth_gray, truth_depth)
+        return result
+
+    def continual_status(self) -> dict:
+        if self._continual is None:
+            return {"enabled": False}
+        return {"enabled": True, **self._continual.status()}
 
     # ---------------------------------------------------------- samples
 
@@ -150,6 +300,9 @@ class InferenceService:
                 torch.cuda.synchronize()
         ms = (time.perf_counter() - t0) * 1000.0
         out = {k: v[0].float().cpu().numpy() for k, v in out.items()}
+
+        # Cache the sample for potential continual learning feedback.
+        self._last_sample = sample
 
         gray = out["gray"][0]
         inv = out["inv_depth"][0]
@@ -259,3 +412,4 @@ def _num(v: str):
         return int(f) if f.is_integer() and abs(f) < 1e9 else f
     except (TypeError, ValueError):
         return v
+

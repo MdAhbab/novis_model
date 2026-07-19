@@ -30,3 +30,11 @@ data:
   out_hw: [192, 256]
   synthetic_train_n: 2048
   synthetic_val_n: 256
+
+continual:
+  lr: 1.0e-5
+  ema_decay: 0.999
+  save_every: 10       # auto-checkpoint every N corrections
+  lambda_depth: 0.5
+  lambda_color: 0.0    # no color feedback by default
+  lambda_perc: 0.0     # no perceptual loss during continual (speed)

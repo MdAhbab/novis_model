@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -125,6 +126,66 @@ def api_runs():
             "results": service().results_metrics()}
 
 
+# -------------------------------------------------------- continual learning
+
+@app.post("/api/continual/enable")
+def api_continual_enable():
+    return service().enable_continual()
+
+
+@app.post("/api/continual/disable")
+def api_continual_disable():
+    return service().disable_continual()
+
+
+@app.get("/api/continual/status")
+def api_continual_status():
+    return service().continual_status()
+
+
+@app.post("/api/continual/feedback")
+async def api_continual_feedback(file: UploadFile):
+    """Accept a ground-truth grayscale image for the most recent inference.
+
+    The image is resized to match the model output resolution and used for
+    one supervised gradient step. Accepts PNG, JPEG, or any PIL-readable
+    format. The image is converted to single-channel grayscale and normalized
+    to [0, 1].
+    """
+    svc = service()
+    raw = await file.read()
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("L")
+        H, W = svc.out_hw
+        if im.size != (W, H):
+            im = im.resize((W, H), Image.LANCZOS)
+        truth_gray = np.asarray(im, dtype=np.float32) / 255.0
+    except Exception:
+        raise HTTPException(400, "could not read the image file")
+    try:
+        result = svc.feedback(truth_gray)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+# -------------------------------------------------------- model bundle export
+
+@app.get("/api/export/bundle")
+def api_export_bundle():
+    """Download a portable zip bundle of the current model state."""
+    from .bundle import create_bundle
+    svc = service()
+    out_path = ROOT / "results" / "novis_bundle.zip"
+    create_bundle(svc, out_path)
+    return FileResponse(
+        path=str(out_path),
+        media_type="application/zip",
+        filename="novis_bundle.zip",
+    )
+
+
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
     """Streams the animated demo scene through the model."""
@@ -151,3 +212,4 @@ async def ws_live(ws: WebSocket):
 _dist = ROOT / "frontend" / "dist"
 if _dist.exists():
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="app")
+
