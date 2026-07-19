@@ -15,6 +15,7 @@ import asyncio
 import io
 import os
 import time
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -33,15 +34,17 @@ app.add_middleware(
 )
 
 _service: InferenceService | None = None
-
+_service_lock = threading.Lock()
 
 def service() -> InferenceService:
     global _service
     if _service is None:
-        _service = InferenceService(
-            config=os.environ.get("NOVIS_CONFIG", "configs/base.yaml"),
-            ckpt=os.environ.get("NOVIS_CKPT") or None,
-            device=os.environ.get("NOVIS_DEVICE") or None)
+        with _service_lock:
+            if _service is None:
+                _service = InferenceService(
+                    config=os.environ.get("NOVIS_CONFIG", "configs/base.yaml"),
+                    ckpt=os.environ.get("NOVIS_CKPT") or None,
+                    device=os.environ.get("NOVIS_DEVICE") or None)
     return _service
 
 
@@ -92,17 +95,21 @@ async def api_infer_upload(file: UploadFile):
         "mask": np.zeros(3, np.float32),
     }
     names = set(z.files)
-    for i, key in enumerate(("thermal", "echo", "sonar")):
-        if key in names:
-            a = np.asarray(z[key], np.float32)
-            if a.shape != sample[key].shape:
-                raise HTTPException(
-                    400, f"{key} must have shape {sample[key].shape}, "
-                         f"got {tuple(a.shape)}")
-            sample[key] = a
-            sample["mask"][i] = 1.0
-    if "mask" in names:
-        sample["mask"] = np.asarray(z["mask"], np.float32).reshape(3)
+    try:
+        for i, key in enumerate(("thermal", "echo", "sonar")):
+            if key in names:
+                a = np.asarray(z[key], np.float32)
+                if a.shape != sample[key].shape:
+                    raise HTTPException(
+                        400, f"{key} must have shape {sample[key].shape}, "
+                             f"got {tuple(a.shape)}")
+                sample[key] = a
+                sample["mask"][i] = 1.0
+        if "mask" in names:
+            sample["mask"] = np.asarray(z["mask"], np.float32).reshape(3)
+    finally:
+        z.close()
+        
     if sample["mask"].sum() == 0:
         raise HTTPException(400, "npz contains none of thermal/echo/sonar")
     return {
@@ -133,8 +140,9 @@ async def ws_live(ws: WebSocket):
             frame["thermal_png"] = svc.render_inputs(sample)["thermal_png"]
             frame["truth_gray_png"] = svc.render_truth(sample)["gray_png"]
             await ws.send_json(frame)
-            # Pace the stream; inference latency dominates on CPU.
-            await asyncio.sleep(max(0.05, 0.25 - frame["latency_ms"] / 1000.0))
+            # Pace the stream; account for inference and JSON encoding latency.
+            elapsed = time.perf_counter() - (t0 + t)
+            await asyncio.sleep(max(0.05, 0.25 - elapsed))
     except (WebSocketDisconnect, RuntimeError):
         return
 

@@ -54,6 +54,7 @@ class InferenceService:
             try:
                 state = torch.load(p, map_location="cpu", weights_only=True)
                 self.model.load_state_dict(state["model"])
+                del state
                 self.ckpt_path = str(p)
                 self.trained = True
                 break

@@ -62,9 +62,15 @@ class NOVISShardDataset(Dataset):
     def __getitem__(self, i):
         fi, j = self._index[i]
         if self._cache_fi != fi:
-            self._cache = {k: v for k, v in np.load(self.files[fi]).items()}
+            if self._cache is not None:
+                self._cache.close()
+            self._cache = np.load(self.files[fi])
             self._cache_fi = fi
         return {k: self._cache[k][j].astype(np.float32) for k in KEYS}
+
+    def __del__(self):
+        if self._cache is not None:
+            self._cache.close()
 
 
 class SyntheticNOVISDataset(Dataset):
@@ -83,6 +89,13 @@ class SyntheticNOVISDataset(Dataset):
         self.modality_dropout = modality_dropout
         self.out_hw = tuple(out_hw)
         self.seed = seed
+        
+        # Pre-compute static background arrays
+        H, W = self.out_hw
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+        self._bg_gray = 0.25 + 0.3 * (xx / W)
+        self._bg_depth = 2.0 + 5.0 * (1.0 - yy / H)
+        self._bg_temp = np.full((H, W), 0.25, dtype=np.float32)
 
     def __len__(self):
         return self.n
@@ -92,11 +105,10 @@ class SyntheticNOVISDataset(Dataset):
         H, W = self.out_hw
 
         # Background: horizontal luminance ramp, depth ramp back-to-front.
-        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-        gray = 0.25 + 0.3 * (xx / W) + 0.05 * rng.standard_normal((H, W))
-        depth_m = 2.0 + 5.0 * (1.0 - yy / H)                # 2..7 m
+        gray = self._bg_gray + 0.05 * rng.standard_normal((H, W))
+        depth_m = self._bg_depth.copy()
         ab = np.zeros((H, W, 2), dtype=np.float32)
-        temp = np.full((H, W), 0.25, dtype=np.float32)       # cool background
+        temp = self._bg_temp.copy()
 
         for _ in range(int(rng.integers(1, 5))):
             w = int(rng.integers(W // 8, W // 3))
