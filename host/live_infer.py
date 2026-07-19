@@ -59,7 +59,6 @@ def synthetic_frames(n_cycles: int = 1):
         pcm[200:230] = 8000
         yield P.build_frame(P.ECHO, seq[P.ECHO], 0, pcm.tobytes())
         seq[P.ECHO] += 1
-        son = struct.pack("<HHHH", 1500, 2200, 0, 0)[:P.SONAR_BYTES]
         son = struct.pack("<HHBBBB", 1500, 2200, 0x03, 0, 0, 0)
         yield P.build_frame(P.SONAR, seq[P.SONAR], 0, son)
         seq[P.SONAR] += 1
