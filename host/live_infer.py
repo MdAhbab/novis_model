@@ -32,6 +32,7 @@ def load_model(config: str, ckpt: str | None, device: str = "cpu"):
     if ckpt:
         state = torch.load(ckpt, map_location=device, weights_only=True)
         model.load_state_dict(state["model"])
+        del state
     model.to(device).eval()
     return model
 

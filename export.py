@@ -53,6 +53,7 @@ def main():
     model = build_model(cfg)
     state = torch.load(args.ckpt, map_location="cpu", weights_only=True)
     model.load_state_dict(state["model"])
+    del state
     wrapper = ExportWrapper(model)
     wrapper.eval()
 

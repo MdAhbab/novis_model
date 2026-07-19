@@ -68,6 +68,7 @@ def main():
     model = build_model(cfg)
     state = torch.load(args.ckpt, map_location=device, weights_only=True)
     model.load_state_dict(state["model"])
+    del state
     model.to(device)
 
     trainer = Trainer(model, cfg, run_dir="results/_evaltmp", device=device)
