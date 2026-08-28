@@ -283,6 +283,8 @@ This is our most important sensor, so we do it first.
 
 The MLX90640 uses **I2C**, a two-wire communication bus.
 
+![Thermal sensor wiring: 3.3 V, GND, SDA and SCL between the nRF52840 and the MLX90640.](figs/fig_wire_thermal.png)
+
 | MLX90640 pin | Connect to nRF52840 |
 |---|---|
 | VIN (or VCC) | **3.3 V** |
@@ -371,6 +373,8 @@ directly to the nRF52840 **can permanently destroy the chip**.
 
 **The fix: a voltage divider.** This is two resistors that cut the 5 V down
 to about 3.3 V. You need one for each HC-SR04, so two in total.
+
+![Ultrasonic wiring. TRIG connects directly. ECHO goes through a 1 kilohm and 2 kilohm divider, and the middle point between the two resistors is what connects to the board.](figs/fig_wire_sonar.png)
 
 #### Building the voltage divider
 
@@ -488,6 +492,8 @@ wires plus power.
 
 #### Wiring
 
+![Microphone wiring: 3.3 V, GND, SCK, WS and SD between the nRF52840 and the INMP441, with the L/R pin tied to ground.](figs/fig_wire_mic.png)
+
 | INMP441 pin | Connect to |
 |---|---|
 | VDD | 3.3 V |
@@ -594,6 +600,8 @@ probably floating — check the SD wire.
 The PAM8302 sits between the nRF52840 and the speaker. It makes a weak
 signal loud enough to be useful.
 
+![Chirp emitter wiring: the nRF52840 PWM pin drives the PAM8302 input, and the amplifier output drives the speaker.](figs/fig_wire_speaker.png)
+
 | PAM8302 pin | Connect to |
 |---|---|
 | VIN | 3.3 V (or 5 V from USB for a louder chirp) |
@@ -656,6 +664,8 @@ working.**
 
 Now connect everything at once, on one breadboard.
 
+![The complete node: thermal, two ultrasonic modules, microphone, amplifier and speaker all connected to the nRF52840, powered by the LiPo cell.](figs/fig_wire_full.png)
+
 **Suggested pin plan** — fill in the right-hand column with the pins you
 actually used, and keep this table. You will need it for the firmware and
 for the paper's hardware section.
@@ -678,6 +688,8 @@ for the paper's hardware section.
 - The two ultrasonic sensors point **left and right of centre**, roughly
   20 degrees each way
 - All sensors point in the **same forward direction** as the thermal array
+
+![Top view of the node showing the thermal field of view, the two ultrasonic cones aimed 20 degrees left and right, and the 3 cm gap between the microphone and the speaker.](figs/fig_layout.png)
 
 Try to keep the assembly rigid — hot glue or a small piece of perfboard
 helps. If sensors shift between recordings, your data becomes inconsistent.
