@@ -120,6 +120,15 @@ AutoPlay "file transfer" prompt for the drive — ignore it, Upload does not nee
 indicator and means nothing about firmware. Red+blue alternating at power-on is the
 factory bootloader animation, not your sketch running.
 
+**Reading serial from this board is unreliable.** Scripted reads (PowerShell,
+`arduino-cli monitor`) returned nothing repeatedly even while the sketch was
+clearly running. Use the **Arduino IDE Serial Monitor**, and note the port changes
+between DFU and app mode, so re-select it after every upload. Because of this, we
+added **LED blink patterns as progress markers** in the test sketches — e.g. 6 fast
+blinks = `setup()` reached, 2 medium = `Wire.begin()` done, 3 slow = sensor found,
+fast strobe forever = sensor not found. When serial is dead, the LED still tells you
+exactly how far the code got. Worth keeping that trick for the rest of Part B.
+
 ### 3b. ESP32 DevKit (debug only)
 
 ESP-WROOM-32 with CP2102. Far easier: labelled `3V3`, labelled GPIOs, and real
@@ -148,9 +157,15 @@ Board: **ESP32 Dev Module** (`esp32:esp32:esp32`), COM8 here.
 ## 4. The blocker: MLX90640 thermal sensor
 
 **Symptom:** `mlx.begin()` returns false ("MLX90640 not found") on both boards,
-nearly always. Once on the nRF52 it printed `Outlier pixels: 5` and
-`MLX90640 found!` — but then every `getFrame()` failed. **We have never read a
-single thermal frame.**
+most of the time. But **twice it did succeed** — and both times `getFrame()` then
+failed anyway:
+
+- **ESP32, I2C clock lowered to 50 kHz:** `MLX90640 found!`, then
+  `Failed to read a frame` repeating forever.
+- **nRF52840:** `Outlier pixels: 5`, `MLX90640 found!`, then no frames.
+
+**We have never read a single thermal frame.** Note that the ESP32 success came
+specifically with the *slower* clock — that is a lead, not a coincidence.
 
 Sensor is a generic **MLX90640BAA** 32x24 module (wide FOV).
 
@@ -171,22 +186,30 @@ Sensor is a generic **MLX90640BAA** 32x24 module (wide FOV).
 4. **The `SET I2C` solder jumper on the module is bridged** — confirmed by
    multimeter continuity (it beeps). Module is in I2C mode, not UART mode.
 5. **Power at the sensor is fine** — 3.23 V measured at its own VIN/GND pins while
-   running.
+   running, fed from the LM2596. If you use an external supply like this, its GND
+   **must** be tied to the MCU's GND as well — sensor GND, supply GND and board GND
+   all on one point. Without a common ground I2C has no reference and nothing
+   works at all.
 
-### What we already ruled out
+### What we tried, and what each did
 
-Do not spend time on these again:
+None of these produced a working thermal frame. But three of them clearly moved
+the needle — those three are the leads, and they all point the same way.
 
 | Tried | Why we tried it | Result |
 |---|---|---|
-| Swapped MCU (nRF52840 → ESP32) | is it the board or the sensor? | same failure — it is the sensor side |
-| I2C clock 100 kHz → 50 kHz | slower clock tolerates marginal wiring | no fix |
-| Refresh rate 8 Hz → 2 Hz | give each frame read more time | no fix |
-| Separate supply (LiPo → LM2596 → 3.3 V) | rule out a weak/noisy rail | no fix |
-| Extra delay before `begin()` | let the bus/power settle after boot | no fix |
-| Retry `begin()` 10 times | is it random or systematic? | 10/10 failed — systematic |
-| Re-seating every wire | loose breadboard contact | behaviour changed, but no fix |
-| **2x 4.7k pull-ups, SDA and SCL to 3V3** | scan showed floating-bus symptoms | **big improvement**, still no `begin()` |
+| Swapped MCU (nRF52840 → ESP32) | is it the board or the sensor? | same failure — so it is the sensor side, not the board |
+| **I2C clock 100 kHz → 50 kHz** | slower clock tolerates marginal wiring | **partly worked** — got `begin()` through on ESP32; frames still failed |
+| **Re-seating the SDA/SCL wires** | loose breadboard contact | **big effect** — scan went from *no devices at all* back to a steady 0x33 |
+| **2x 4.7k pull-ups, SDA and SCL to 3V3** | scan showed floating-bus symptoms | **big effect** — phantom addresses disappeared; `begin()` still fails |
+| Refresh rate 8 Hz → 2 Hz | give each frame read more time | no change |
+| Separate supply (LiPo → LM2596 → 3.3 V) | rule out a weak or noisy rail | no change — rail was never the problem |
+| Extra delay before `begin()` | let bus/power settle after boot | no change |
+| Retry `begin()` 10 times in a row | is the failure random or systematic? | 10/10 failed — systematic, not random |
+
+The three that helped — slower clock, re-seated wires, added pull-ups — are all
+**signal-quality** fixes. None of the power or timing changes did anything. That is
+the strongest single hint we have about where the fault is.
 
 ### The pull-up finding — keep this
 
@@ -207,9 +230,14 @@ aborted transfer. The probe sketch below starts with a bus-recovery routine
 
 - **(a) A transfer-length limit.** Everything short works; only the long 128-byte
   chunked EEPROM read fails.
-- **(b) Marginal physical connections.** Breadboard contacts or jumpers that
-  survive short transactions but not sustained ones. Supported by behaviour
-  changing when wires were re-seated, and by that one lone success.
+- **(b) Marginal signal quality on the bus.** Breadboard contacts, jumper wires or
+  weak pull-ups that survive short transactions but not sustained ones.
+
+**The evidence currently leans to (b)**, because the only three things that ever
+changed the behaviour — slower clock, re-seated wires, added pull-ups — are all
+signal-quality fixes, while every power and timing change did nothing. The probe
+below is still worth running first, because if it *is* (a) the fix is a small code
+change, and if it is (b) the fix is soldering — very different amounts of work.
 
 Note: `Adafruit_MLX90640`'s `i2c_dev` member is **private**, so the 128-byte chunk
 size cannot be reduced from a sketch. If (a) is confirmed, the fix means patching
