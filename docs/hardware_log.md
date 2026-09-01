@@ -43,7 +43,7 @@ five wired at once it would have been hopeless.
 |---|---|---|
 | A | Toolchain, libraries | **done** |
 | B1 | nRF52840 alive (Blink) | **PASS** |
-| B2 | MLX90640 thermal | **BLOCKED** — section 4 |
+| B2 | MLX90640 thermal | **PASS** — at full 8 Hz, see section 4 |
 | B3 | HC-SR04 x2 | not started |
 | B4 | INMP441 mic | not started |
 | B5 | PAM8302 + speaker | not started |
@@ -53,7 +53,9 @@ five wired at once it would have been hopeless.
 | E | 12-scene capture | **start ethics paperwork now** — takes weeks |
 | F | Power/range/latency | not started |
 
-Everything downstream is waiting on B2.
+B2 took most of two days. Section 4 explains why, because the cause was not
+anything the build guide warns about, and the same trap is waiting in B4 and in
+Part C.
 
 ### Toolchain
 
@@ -154,114 +156,103 @@ Board: **ESP32 Dev Module** (`esp32:esp32:esp32`), COM8 here.
 
 ---
 
-## 4. The blocker: MLX90640 thermal sensor
+## 4. B2 — MLX90640: solved, and why it took so long
 
-**Symptom:** `mlx.begin()` returns false ("MLX90640 not found") on both boards,
-most of the time. But **twice it did succeed** — and both times `getFrame()` then
-failed anyway:
+**Status: PASS.** The sensor now streams a full 32x24 grid at **8 Hz over 400 kHz
+I2C**. Room reads ~27 C and a hand in frame shows 33-37 C.
 
-- **ESP32, I2C clock lowered to 50 kHz:** `MLX90640 found!`, then
-  `Failed to read a frame` repeating forever.
-- **nRF52840:** `Outlier pixels: 5`, `MLX90640 found!`, then no frames.
+There were **two separate faults stacked on top of each other**. Both are worth
+understanding, because the first one will bite again in B4 and Part C.
 
-**We have never read a single thermal frame.** Note that the ESP32 success came
-specifically with the *slower* clock — that is a lead, not a coincidence.
+### Fault 1 — our module is not a plain breakout (this was the real one)
 
-Sensor is a generic **MLX90640BAA** 32x24 module (wide FOV).
+We have a **GY-MCU90640**, not a bare MLX90640 breakout. It carries **its own
+onboard STM32**, and by default that STM32 is the **I2C master** of the MLX90640,
+reading it continuously and streaming the result out over **UART at 460800 baud**.
+The giveaways were there from the start and we missed them: the module has `RX`/`TX`
+pins, and the product page quotes a *baud rate* — a plain I2C sensor has no baud rate.
 
-### What is confirmed (measured, not assumed)
+So for two days we were a **second master on a bus that already had one**. Every
+symptom follows from that:
 
-1. **The sensor is alive and correctly addressed.** An I2C scan finds a device at
-   **0x33** — the MLX90640's default address — repeatedly, on both boards.
-2. **It holds real data.** Reading its ID registers directly returns plausible
-   unique values, so it is a genuine programmed part:
-   ```
-   0x2408 -> 0xCEB8
-   0x2409 -> 0x018A
-   0x2407 -> write ok (err=0) but no data came back
-   ```
-3. **Short reads work, long reads do not.** 2-byte register reads succeed.
-   `mlx.begin()` — which dumps the **1664-byte** calibration EEPROM in 128-byte
-   chunks — fails. This is our sharpest clue.
-4. **The `SET I2C` solder jumper on the module is bridged** — confirmed by
-   multimeter continuity (it beeps). Module is in I2C mode, not UART mode.
-5. **Power at the sensor is fine** — 3.23 V measured at its own VIN/GND pins while
-   running, fed from the LM2596. If you use an external supply like this, its GND
-   **must** be tied to the MCU's GND as well — sensor GND, supply GND and board GND
-   all on one point. Without a common ground I2C has no reference and nothing
-   works at all.
+| Symptom | Cause |
+|---|---|
+| Scan found 0x33 | the sensor chip really is on the bus |
+| 2-byte register reads worked | short transfers sometimes won arbitration |
+| 128-byte EEPROM reads always failed | the STM32's own traffic cut into long transfers |
+| Phantom addresses 0x07-0x17 in scans | another master driving the lines mid-scan |
+| Sometimes `found`, mostly not | pure timing luck |
+| Nothing electrical ever fixed it | it was never an electrical problem |
 
-### What we tried, and what each did
+**The fix: tie the `PS` pin to `GND`, then power-cycle.** That puts the module into
+I2C passthrough mode and takes the STM32 off the bus. `PS` is sampled **only at
+power-up**, so after wiring it you must **unplug and replug USB** — a reset or EN
+press does nothing. We had left `PS` floating the entire time.
 
-None of these produced a working thermal frame. But three of them clearly moved
-the needle — those three are the leads, and they all point the same way.
+### Fault 2 — I2C too slow for the frame rate (error -8)
 
-| Tried | Why we tried it | Result |
-|---|---|---|
-| Swapped MCU (nRF52840 → ESP32) | is it the board or the sensor? | same failure — so it is the sensor side, not the board |
-| **I2C clock 100 kHz → 50 kHz** | slower clock tolerates marginal wiring | **partly worked** — got `begin()` through on ESP32; frames still failed |
-| **Re-seating the SDA/SCL wires** | loose breadboard contact | **big effect** — scan went from *no devices at all* back to a steady 0x33 |
-| **2x 4.7k pull-ups, SDA and SCL to 3V3** | scan showed floating-bus symptoms | **big effect** — phantom addresses disappeared; `begin()` still fails |
-| Refresh rate 8 Hz → 2 Hz | give each frame read more time | no change |
-| Separate supply (LiPo → LM2596 → 3.3 V) | rule out a weak or noisy rail | no change — rail was never the problem |
-| Extra delay before `begin()` | let bus/power settle after boot | no change |
-| Retry `begin()` 10 times in a row | is the failure random or systematic? | 10/10 failed — systematic, not random |
+With `PS` grounded, `begin()` succeeded immediately but every `getFrame()` returned
+**-8**. Reading the library source, -8 is literally "too many retries":
+`getFrame()` reads a frame, clears the data-ready flag, re-reads status, and gives
+up after 5 rounds if the flag keeps coming back set.
 
-The three that helped — slower clock, re-seated wires, added pull-ups — are all
-**signal-quality** fixes. None of the power or timing changes did anything. That is
-the strongest single hint we have about where the fault is.
+The arithmetic explains it. One frame is 1664 bytes:
 
-### The pull-up finding — keep this
+| I2C clock | time to read a frame | frame arrives every (8 Hz) | keeps up? |
+|---|---|---|---|
+| 100 kHz | ~150 ms | 125 ms | no — always behind |
+| 400 kHz | ~37 ms | 125 ms | yes, comfortably |
 
-Before pull-ups, an I2C scan reported **phantom devices** (0x07, 0x08, 0x09, 0x10,
-0x11, 0x12) alongside the real 0x33. Phantom low addresses mean the bus lines are
-floating and the scanner is reading noise as an ACK.
+At 100 kHz a new frame was always ready before we finished reading the last one, so
+the flag never cleared. **Raising the clock to 400 kHz fixed it.**
 
-Adding **4.7k from SDA to 3V3 and 4.7k from SCL to 3V3** cleaned the scan down to
-just `0x33`. This generic breakout does not carry adequate pull-ups of its own, so
-**these two resistors stay on the final node**, and this goes in the paper's
-hardware section.
+If -8 ever comes back, you can attack it from either end: raise the I2C clock, or
+lower the sensor with `mlx.setRefreshRate(MLX90640_2_HZ)`. Prefer raising the clock
+— **NOVIS is designed around 8 Hz thermal** and the protocol and throughput numbers
+assume it. If we ever ship at a lower refresh rate, that has to be written down,
+because it changes the paper's numbers.
 
-If phantom addresses come back later, the sensor is stuck holding the bus from an
-aborted transfer. The probe sketch below starts with a bus-recovery routine
-(toggle SCL 9 times with SDA released) that clears it.
+### Final working configuration
 
-### Two possible causes left
+| Setting | Value |
+|---|---|
+| `PS` pin | tied to GND (power-cycle after wiring) |
+| I2C clock | 400 kHz |
+| Refresh rate | 8 Hz (`MLX90640_8_HZ`) |
+| Resolution | 18-bit (`MLX90640_ADC_18BIT`) |
+| Mode | chess (`MLX90640_CHESS`) |
+| Pull-ups | 2x 4.7k, SDA and SCL to 3V3 |
 
-- **(a) A transfer-length limit.** Everything short works; only the long 128-byte
-  chunked EEPROM read fails.
-- **(b) Marginal signal quality on the bus.** Breadboard contacts, jumper wires or
-  weak pull-ups that survive short transactions but not sustained ones.
+### Keep the pull-ups
 
-**The evidence currently leans to (b)**, because the only three things that ever
-changed the behaviour — slower clock, re-seated wires, added pull-ups — are all
-signal-quality fixes, while every power and timing change did nothing. The probe
-below is still worth running first, because if it *is* (a) the fix is a small code
-change, and if it is (b) the fix is soldering — very different amounts of work.
+Before we added them, an I2C scan showed phantom devices; with 4.7k from SDA to 3V3
+and 4.7k from SCL to 3V3 the scan cleaned up to just `0x33`. We have not tested
+whether they are still strictly required now that the STM32 is off the bus, and
+there is no reason to find out — **leave them on the final node.** The article this
+build follows claims these breakouts have adequate onboard pull-ups; ours did not.
+Note this in the paper's hardware section.
 
-Note: `Adafruit_MLX90640`'s `i2c_dev` member is **private**, so the 128-byte chunk
-size cannot be reduced from a sketch. If (a) is confirmed, the fix means patching
-the library or driving the Melexis API directly.
+### What it was NOT — do not re-test these
 
-### Next step — run the read-size probe (section 5b)
+All of the following were tried and none of them was the cause. Recorded so nobody
+burns another day on them:
 
-Do this **before any more rewiring**. It settles (a) vs (b) with data instead of
-another guess: it recovers a stuck bus, tests read sizes 2→250 bytes five times
-each, then tries the full 1664-byte EEPROM in 32 / 64 / 128-byte chunks.
+swapping the MCU (nRF52840 <-> ESP32), lowering the clock to 50 kHz, dropping the
+refresh rate to 2 Hz, powering the sensor from a separate LiPo + LM2596 3.3 V
+supply, adding settle delays before `begin()`, retrying `begin()` ten times, and
+re-seating every wire.
 
-| Probe result | Meaning | Do this |
-|---|---|---|
-| All sizes fine, full EEPROM fails only at 128-byte chunks | (a) chunk limit | patch library to smaller chunks |
-| Clean cutoff above some size (32 ok, 64 not) | (a) buffer limit | same, using the known good size |
-| Small sizes fail randomly too | (b) electrical | stop debugging software — **solder** |
+Two of these *appeared* to help — a slower clock and re-seated wires — which is
+exactly what made the diagnosis so slow. Both were only changing how often we lost
+the arbitration race, not fixing it. **Lesson: when the same setup gives different
+answers run to run, suspect contention on the bus before suspecting bad solder.**
 
-`endTransmission` error codes: `2` = address NACK, `3` = data NACK, `5` = timeout.
+### One more thing to carry forward
 
-**If it is (b):** solder the four wires (VIN, GND, SCL, SDA) directly instead of
-breadboarding, or move to a different breadboard with fresh jumpers. The guide
-already wants the final assembly rigid (hot glue or perfboard) because sensors
-shifting between recordings ruins dataset consistency — so doing this properly now
-serves both purposes.
+Read the product page and the module silkscreen before assuming a part is what the
+guide assumes. `RX`, `TX` and `PS` pins on something described as an I2C sensor mean
+there is a microcontroller in the way. The INMP441 (B4) and the final assembly
+(B6/C) deserve the same check.
 
 ---
 
@@ -299,9 +290,13 @@ void loop() {
 }
 ```
 
-### 5b. Read-size probe — run this next
+### 5b. Read-size probe — kept for reference, not what fixed B2
 
-Finds the exact read size where the bus breaks, which tells us cause (a) or (b).
+Written while we still thought the fault was electrical (see section 4 for what it
+actually was — a second I2C master on the bus, fixed by grounding `PS`). Never got
+a conclusive run before the real cause was found. Keeping it here because it is a
+genuinely useful pattern for a future "short reads work, long reads don't" bug —
+just don't expect it to explain *this* one.
 
 ```cpp
 #include <Wire.h>
@@ -402,10 +397,11 @@ void setup() {
 void loop() {}
 ```
 
-### 5c. The actual B2 test — for once the bus is fixed
+### 5c. The B2 test — this is the actual passing configuration
 
-ESP32 version. On nRF52, replace `Wire.begin(21, 22);` with
-`Wire.setPins(31, 29); Wire.begin();`.
+ESP32 version, PASSED at 8 Hz / 400 kHz (section 4). On nRF52, replace
+`Wire.begin(21, 22);` with `Wire.setPins(31, 29); Wire.begin();` — the clock and
+refresh rate lines stay the same.
 
 ```cpp
 #include <Wire.h>
@@ -419,11 +415,15 @@ void setup() {
   delay(2000);
   Serial.println("Starting MLX90640 test...");
 
-  Wire.begin(21, 22);
-  delay(1000);
+  Wire.begin(21, 22);      // PS must already be tied to GND (power-cycled after wiring)
+
+  // 400 kHz is required to keep up with the 8 Hz refresh rate below: one frame
+  // is 1664 bytes (~150 ms at 100 kHz, ~37 ms at 400 kHz) but a new frame
+  // arrives every 125 ms. Too slow here and getFrame() returns -8 forever.
+  Wire.setClock(400000);
 
   if (!mlx.begin(MLX90640_I2CADDR_DEFAULT, &Wire)) {
-    Serial.println("ERROR: MLX90640 not found. Check your wiring.");
+    Serial.println("ERROR: MLX90640 not found. Check wiring, and that PS is tied to GND.");
     while (1) delay(10);
   }
   Serial.println("MLX90640 found!");
@@ -451,9 +451,9 @@ void loop() {
 }
 ```
 
-**B2 passes only when** the grid shows room temperature (~20–30) **and** a hand in
-front of the sensor makes those pixels jump to ~30–35. `MLX90640 found!` on its own
-is not a pass — we learned that the hard way.
+**PASS confirmed:** grid reads ~27 C at room temperature, a hand in frame reads
+33-37 C, sustained at 8 Hz. `MLX90640 found!` on its own is not a pass — `getFrame()`
+has to succeed too, and for a while it didn't (error -8, see section 4).
 
 ### 5d. Command line build/upload
 
@@ -500,7 +500,10 @@ Two files are ours:
   **must** be replaced with our real wiring — the guide calls this the number one
   cause of "it compiled but nothing works". Also note the guide's version calls
   `Wire.begin()` with no arguments; on our ProMicro clone that targets the wrong
-  pins, so it needs `Wire.setPins(...)` first.
+  pins, so it needs `Wire.setPins(...)` first. **Carry over the section 4 fixes
+  too, or B2 breaks again silently inside the real firmware:** `PS` tied to GND,
+  `Wire.setClock(400000)`, and check whether the INMP441 or any other module in
+  the final assembly turns out to have its own onboard MCU the same way this one did.
 - **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library. Nonce = 8-byte
   counter + 4-byte session salt.
 
@@ -517,7 +520,8 @@ Write down what you actually measure, never what you expected:
 - real battery life (predicted 3.3 h — report the truth, even if it is 2 h)
 - the F2 range table (1–10 m)
 - HC-SR04 at 3.3 V: worked, or needed RCWL-1601 / boost converter?
-- that the MLX90640 breakout needs external 4.7k pull-ups
+- that the MLX90640 module needs external 4.7k pull-ups, its `PS` pin tied to GND,
+  and 400 kHz I2C to sustain 8 Hz — all three are in section 4
 
 ### Part E — start the paperwork now
 
