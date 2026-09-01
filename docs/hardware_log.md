@@ -44,7 +44,7 @@ five wired at once it would have been hopeless.
 | A | Toolchain, libraries | **done** |
 | B1 | nRF52840 alive (Blink) | **PASS** |
 | B2 | MLX90640 thermal | **PASS** — at full 8 Hz, see section 4 |
-| B3 | HC-SR04 x2 | not started |
+| B3 | HC-SR04 x2 | **code ready, compiled clean** — wiring pending, see section 6 |
 | B4 | INMP441 mic | not started |
 | B5 | PAM8302 + speaker | not started |
 | B6 | Full assembly | not started |
@@ -55,7 +55,8 @@ five wired at once it would have been hopeless.
 
 B2 took most of two days. Section 4 explains why, because the cause was not
 anything the build guide warns about, and the same trap is waiting in B4 and in
-Part C.
+Part C. **B3 is next** — section 6 has the pin plan and a compiled, ready-to-flash
+test sketch; wiring it up is the only remaining step.
 
 ### Toolchain
 
@@ -130,6 +131,17 @@ added **LED blink patterns as progress markers** in the test sketches — e.g. 6
 blinks = `setup()` reached, 2 medium = `Wire.begin()` done, 3 slow = sensor found,
 fast strobe forever = sensor not found. When serial is dead, the LED still tells you
 exactly how far the code got. Worth keeping that trick for the rest of Part B.
+
+**A sketch with no libraries will not link — this looks like a Serial bug but isn't.**
+On this core, the global `Serial` object (USB CDC) is defined inside the bundled
+`Adafruit_TinyUSB` library, and Arduino only links a library if the sketch includes
+one of its headers. B2's sketch used `Serial` fine because `Adafruit_MLX90640.h`
+pulls TinyUSB in as a side effect. A plain sketch that only calls `Serial.begin()` /
+`pinMode()` / `pulseIn()` — exactly what B3, B4 and B5 need — has nothing to pull it
+in, and fails with `undefined reference to 'Serial'` /
+`Adafruit_USBD_CDC::begin(unsigned long)`. Fix: add
+`#include <Adafruit_TinyUSB.h>` at the top, even though nothing in the sketch
+appears to call it directly.
 
 ### 3b. ESP32 DevKit (debug only)
 
@@ -473,22 +485,104 @@ arduino-cli board list      # which port is which
 
 ---
 
-## 6. After B2 — what comes next
+## 6. Next up — B3: HC-SR04 ultrasonic (wiring pending, code ready)
 
-### Remaining wiring (B3–B6)
+Not wired yet, but the pin plan and test sketch are done and compile clean for the
+nRF52840 (`adafruit:nrf52:pca10056`) — do this next, one sensor at a time as usual.
 
-- **HC-SR04 ECHO is 5 V and must go through the 1k/2k divider.** `5V x 2/(1+2) = 3.33V`.
-  The junction *between* the two resistors goes to the MCU — not the end of a
-  resistor. One divider per sensor. This is the one real way to destroy the board.
+**The one real danger in Part B.** HC-SR04 ECHO outputs **5 V**; the nRF52840 is
+3.3 V-only and 5 V on a GPIO can destroy it permanently. ECHO must go through a
+1k/2k voltage divider — TRIG does not need one, it's an output.
+
+```
+HC-SR04 ECHO --[1k]--+--[2k]-- GND
+                      |
+                to nRF52840 ECHO pin      (midpoint = 5V x 2/3 = 3.33V)
+```
+
+### Wiring (LEFT sensor first, test, then RIGHT)
+
+Picking free pins that don't collide with the MLX90640's I2C on O31/O29:
+
+| HC-SR04 | Board pad | Notes |
+|---|---|---|
+| LEFT VCC | 5V / VBUS | USB power for the bench test — see battery note below |
+| LEFT GND | GND | |
+| LEFT TRIG | `O17` | direct, no divider |
+| LEFT ECHO | `O20` | **through the divider** |
+| RIGHT VCC | 5V / VBUS | |
+| RIGHT GND | GND | |
+| RIGHT TRIG | `O22` | direct, no divider |
+| RIGHT ECHO | `O24` | **through the divider** |
+
+### Test code (compiled clean, not yet run against real hardware)
+
+```cpp
+// Required on this core even though it looks unused — see section 3a's
+// "Serial linking" note. Without it: undefined reference to `Serial'.
+#include <Adafruit_TinyUSB.h>
+
+#define TRIG_LEFT   17
+#define ECHO_LEFT   20
+#define TRIG_RIGHT  22
+#define ECHO_RIGHT  24
+
+void setup() {
+  Serial.begin(115200);
+  uint32_t t0 = millis();
+  while (!Serial && millis() - t0 < 5000) delay(10);
+
+  pinMode(TRIG_LEFT, OUTPUT);
+  pinMode(ECHO_LEFT, INPUT);
+  pinMode(TRIG_RIGHT, OUTPUT);
+  pinMode(ECHO_RIGHT, INPUT);
+
+  Serial.println("HC-SR04 test starting...");
+}
+
+// Returns distance in millimetres, or 0 if nothing was detected.
+uint16_t readRange(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);       // datasheet asks for a 10 us pulse
+  digitalWrite(trigPin, LOW);
+
+  unsigned long duration = pulseIn(echoPin, HIGH, 30000UL);  // 30ms timeout, ~5m
+  if (duration == 0) return 0;
+
+  return (uint16_t)((duration * 343UL) / 2000UL);  // mm, round trip
+}
+
+void loop() {
+  uint16_t left = readRange(TRIG_LEFT, ECHO_LEFT);
+  delay(60);   // gap so the two sensors don't hear each other's pings (cross-talk)
+  uint16_t right = readRange(TRIG_RIGHT, ECHO_RIGHT);
+
+  Serial.print("Left: ");  Serial.print(left);  Serial.print(" mm   ");
+  Serial.print("Right: "); Serial.print(right); Serial.println(" mm");
+
+  delay(200);
+}
+```
+
+**PASS condition:** readings track a hand moving toward/away from the sensor, and
+match a real ruler within a few mm at 30 cm — same as the guide's B3.
+
+### Then keep going: B4–B6
+
 - **INMP441 `L/R` must be tied to GND** or the mic outputs nothing at all.
 - **Speaker never connects directly to an MCU pin** — always through the PAM8302.
-- Read the two sonars one after the other with a gap, or they hear each other's
-  pings (cross-talk).
 - Physical layout matters: mic ~3 cm from speaker, sonars ~20° left and right of
   centre, everything pointing the same way as the thermal array. Keep it rigid.
 - On battery there is no 5 V rail, and many HC-SR04 units stop working below ~4.5 V.
-  Test ours; if they fail, we need an RCWL-1601 or a boost converter — **and we must
-  write down which we used.**
+  Test ours on battery once B3 passes on USB; if they fail, we need an RCWL-1601 or
+  a boost converter — **and we must write down which we used.**
+- **Check every remaining module for a hidden onboard MCU before wiring it**, the
+  way the MLX90640 turned out to be a GY-MCU90640 (section 4). Look for RX/TX pins,
+  a quoted baud rate, or "smart"/"UART" in the product listing.
+
+## 7. Looking further ahead
 
 ### Firmware (Part C)
 
