@@ -4,7 +4,7 @@
 
 Project: NOVIS (Non-Optical Visual Inference System)
 Code repository: https://github.com/MdAhbab/novis_model
-Last updated: 26 August 2026
+Last updated: 1 September 2026
 
 ---
 
@@ -82,8 +82,16 @@ into four pictures at once:
 ### The flow, in one line
 
 ```
-Sensors → nRF52840 → encrypt → Bluetooth → Host PC → NOVISNet → images
+Sensors → ESP32 → encrypt → Bluetooth → Host PC → NOVISNet → images
 ```
+
+> **Board change (1 Sept 2026):** the team switched the node MCU from an
+> nRF52840 ProMicro clone to a plain **ESP32-WROOM-32 DevKit**. The ESP32 has
+> real labelled pins, a proper USB-serial chip (no fiddly UF2 bootloader
+> dance), and was already our go-to board for debugging the thermal sensor.
+> Everything sensor-side in Part B below is written for the ESP32 and has
+> real, tested pin numbers. **Part C (firmware) is the one place this is
+> not a drop-in swap** — see the note there.
 
 ### Why the node is "dumb"
 
@@ -100,8 +108,8 @@ battery and a real processor — does all the heavy work. This is called
 
 | # | Part | What it does |
 |---|---|---|
-| 1 | **nRF52840** Pro Micro board (Nice!Nano compatible) | The brain. Reads sensors, encrypts, sends Bluetooth |
-| 2 | **MLX90640** 32×24 thermal array | Heat image |
+| 1 | **ESP32-WROOM-32** DevKit board | The brain. Reads sensors, encrypts, sends Bluetooth |
+| 2 | **MLX90640** 32×24 thermal array (ours is a **GY-MCU90640** module — see B2) | Heat image |
 | 3 | **HC-SR04** ultrasonic module ×2 | Distance measurement |
 | 4 | **INMP441** I2S microphone | Records echoes |
 | 5 | **3W 8Ω speaker** | Emits the chirp sound |
@@ -112,6 +120,8 @@ battery and a real processor — does all the heavy work. This is called
 
 - Breadboard and jumper wires (male-to-male, male-to-female)
 - Resistors for the voltage divider: **2× 1 kΩ and 2× 2 kΩ** (see Part B3 — this is important)
+- **2× 4.7 kΩ resistors** for the MLX90640 I2C pull-ups (see Part B2 — our
+  breakout does not have adequate ones built in)
 - A multimeter (for the power measurement experiment in Part F)
 - A USB cable that supports **data**, not only charging
 - A smartphone with a camera (for the real data capture in Part E)
@@ -217,17 +227,26 @@ because no trained model exists yet.
 3. In the box labelled **"Additional boards manager URLs"**, paste this:
 
    ```
-   https://www.adafruit.com/package_adafruit_index.json
+   https://espressif.github.io/arduino-esp32/package_esp32_index.json
    ```
+
+   > A few older guides quote
+   > `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`.
+   > That one still works too, but the URL above is Espressif's current
+   > official one — use it.
 
 4. Click OK
 5. Go to **Tools → Board → Boards Manager**
-6. Search for **"Adafruit nRF52"** and click **Install**. This takes several
-   minutes — it downloads a full compiler toolchain. Be patient.
-7. When it finishes, go to **Tools → Board → Adafruit nRF52 Boards** and
-   select your board. If you have a Nice!Nano-compatible Pro Micro nRF52840,
-   choose **"Nice!Nano"** if listed, otherwise **"Adafruit Feather nRF52840
-   Express"** works for most clones.
+6. Search for **"esp32"** and install the package **by Espressif Systems**.
+   This downloads compiler toolchains for every ESP32 variant (Xtensa and
+   RISC-V) and is **large — 1.5 GB+**. Make sure you have the disk space; on
+   Windows this lands under `%LOCALAPPDATA%\Arduino15` by default, and it is
+   worth pointing that at a drive with room before you start (`File →
+   Preferences → Settings → "Sketchbook location"` for sketches, and the
+   `directories.data` entry in `arduino-cli.yaml` for the board/library
+   cache if you use the CLI).
+7. When it finishes, go to **Tools → Board → ESP32 Arduino** and select
+   **"ESP32 Dev Module"** — this matches a plain ESP32-WROOM-32 DevKit.
 
 ### A4. Install the Arduino libraries
 
@@ -235,12 +254,14 @@ Go to **Tools → Manage Libraries**, then search and install each of these:
 
 | Library to search for | Used for |
 |---|---|
-| `Adafruit MLX90640` | Thermal sensor |
+| `Adafruit MLX90640` | Thermal sensor — same library works unchanged on ESP32 |
 | `Adafruit BusIO` | Required by the above (usually installs automatically) |
 | `Crypto` by Rhys Weatherley | ChaCha20-Poly1305 encryption |
 
-The Bluetooth library (Bluefruit) comes with the board package — you do not
-need to install it separately.
+> **Bluetooth:** ESP32's BLE stack (built into the `esp32` board package,
+> `BLEDevice.h` / `NimBLE-Arduino`) is **not the same API** as the Bluefruit
+> library the repository's firmware skeleton was written against. See the
+> warning in Part C before assuming `novis_node.ino` will compile as-is.
 
 ---
 
@@ -250,9 +271,10 @@ need to install it separately.
 
 1. **Always unplug the USB cable before changing any wire.** Rewiring a
    powered board is the most common way to destroy it.
-2. **The nRF52840 is a 3.3 V chip.** Putting 5 V on any of its pins can
+2. **The ESP32 is a 3.3 V chip.** Putting 5 V on any of its GPIO pins can
    permanently destroy it. The HC-SR04 outputs 5 V. See step B3 — you
-   **must** build a voltage divider.
+   **must** build a voltage divider. (The board's own 5V/VIN pin is fine —
+   that one is meant for 5 V input.)
 3. **Double-check power and ground before plugging in.** Reversing VCC and
    GND destroys most modules instantly.
 4. **Add one sensor at a time.** Test it. Only then add the next.
@@ -261,41 +283,84 @@ need to install it separately.
 
 **Goal:** confirm the board is alive and you can upload code to it.
 
-1. Plug the nRF52840 board into your PC with the USB cable
-2. In Arduino IDE, go to **Tools → Port** and select the port that appears
+1. Plug the ESP32 board into your PC with a USB cable that carries **data**,
+   not just charging power
+2. In Arduino IDE, confirm the board is **ESP32 Dev Module** and go to
+   **Tools → Port** to select the port that appears (a genuine ESP32 DevKit
+   has an onboard CP2102 or CH340 USB-serial chip, so a port should just
+   show up — no special driver dance needed on most systems, though see the
+   troubleshooting note below if it doesn't)
 3. Go to **File → Examples → 01.Basics → Blink**
 4. Click the **Upload** arrow
 
 **Test passes if:** the small LED on the board blinks on and off, once per
 second.
 
-**If nothing happens:** double-tap the reset button on the board quickly.
-This puts most nRF52840 boards into bootloader mode — a drive should appear
-on your computer. Then try uploading again.
+**If upload gets stuck at "Connecting...":** hold the board's **BOOT**
+button down, click Upload again, and release BOOT the moment you see
+"Connecting..." start progressing (usually right after a few dots). Boards
+with proper auto-reset circuitry (most DevKits) don't need this, but some
+clones do.
+
+**If Windows shows the port with a yellow warning / "Error" status, or no
+port appears at all:** the CP2102 USB-to-UART driver may not be installed.
+Download Silicon Labs' VCP driver
+(`CP210x_Windows_Drivers.zip` from silabs.com/developer-tools) and run
+`CP210xVCPInstaller_x64.exe`. After installing, the device should enumerate
+as "Silicon Labs CP210x USB to UART Bridge (COMx)" in Device Manager.
 
 ---
 
 ### B2. Step 2 — The thermal sensor (MLX90640)
 
-This is our most important sensor, so we do it first.
+This is our most important sensor, so we do it first. **It is also the
+hardest one we hit** — it took the better part of two days to get working,
+for a reason the datasheet does not warn you about. Read the whole section;
+skipping the explanation below just means re-discovering it the hard way.
+
+#### Our module is not a plain breakout — read this first
+
+Check the label on your module. If it says **GY-MCU90640** (ours does), it
+is not a bare MLX90640 sensor — it has **its own onboard STM32** that, by
+default, is the I2C master of the MLX90640 and streams the readings out over
+**UART at 460800 baud**. You can tell from the outside too: a plain I2C
+breakout has no `RX`/`TX` pins and no quoted baud rate; this module has both.
+
+Left with its default wiring, that onboard STM32 fights any external
+microcontroller for the I2C bus. The result is exactly the kind of maddening,
+inconsistent failure that looks electrical but isn't: an address scan finds
+the sensor at `0x33`, tiny reads succeed, but the sensor's full calibration
+read or a frame read fails almost every time — and the failure rate changes
+if you re-seat a wire or slow down the clock, which makes it look like a
+wiring problem when it is really two masters racing for the bus.
+
+**The fix:** the module has a `PS` pin. Tie it to **GND** and **fully unplug
+and replug USB** (a reset button press is not enough — `PS` is only sampled
+at power-up). This puts the module into I2C passthrough mode and takes its
+onboard STM32 off the bus, letting our own MCU talk to the sensor chip
+directly.
 
 #### Wiring
 
-The MLX90640 uses **I2C**, a two-wire communication bus.
+The MLX90640 uses **I2C**, a two-wire communication bus. On the ESP32 the
+default I2C pins are **GPIO21 (SDA)** and **GPIO22 (SCL)** — no ambiguity
+here, unlike some clone boards.
 
-![Thermal sensor wiring: 3.3 V, GND, SDA and SCL between the nRF52840 and the MLX90640.](figs/fig_wire_thermal.png)
+![Thermal sensor wiring: 3.3 V, GND, SDA and SCL between the ESP32 and the MLX90640.](figs/fig_wire_thermal.png)
 
-| MLX90640 pin | Connect to nRF52840 |
+| MLX90640 pin | Connect to ESP32 |
 |---|---|
-| VIN (or VCC) | **3.3 V** |
+| VIN (or VCC) | **3V3** |
 | GND | GND |
-| SDA | SDA pin |
-| SCL | SCL pin |
+| SDA | **GPIO21** |
+| SCL | **GPIO22** |
+| **PS** | **GND** — required, see above |
 
-> **Finding SDA and SCL on your board:** look at the silkscreen printing on
-> the board, or search online for "[your board name] pinout". On the
-> nRF52840 any pin can be used for I2C, but the board defines default SDA
-> and SCL pins — use those, they are simplest.
+**Also add pull-up resistors:** 4.7 kΩ from the SDA line to 3V3, and another
+4.7 kΩ from the SCL line to 3V3. Our specific breakout does not carry
+adequate ones of its own — without them an I2C scan shows phantom devices at
+random low addresses alongside the real `0x33`, a classic floating-bus
+symptom.
 
 #### Test code
 
@@ -310,12 +375,20 @@ float frame[32 * 24];
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) delay(10);   // wait for the Serial Monitor to open
+  delay(2000);   // give the Serial Monitor time to attach
 
   Serial.println("Starting MLX90640 test...");
 
+  Wire.begin(21, 22);      // SDA = GPIO21, SCL = GPIO22
+
+  // 400 kHz is required, not optional: one frame is 1664 bytes, which takes
+  // ~150 ms at 100 kHz but only ~37 ms at 400 kHz. At 8 Hz a new frame is
+  // ready every 125 ms, so 100 kHz can never keep up and getFrame() returns
+  // error -8 ("too many retries") forever.
+  Wire.setClock(400000);
+
   if (!mlx.begin(MLX90640_I2CADDR_DEFAULT, &Wire)) {
-    Serial.println("ERROR: MLX90640 not found. Check your wiring.");
+    Serial.println("ERROR: MLX90640 not found. Check wiring, and that PS is tied to GND.");
     while (1) delay(10);
   }
 
@@ -345,18 +418,31 @@ void loop() {
 }
 ```
 
-Open **Tools → Serial Monitor** and set the speed to **115200**.
+Open **Tools → Serial Monitor** and set the speed to **115200**. Open the
+monitor **before** the board finishes booting if you can (or press the
+**EN** button once it's open) — opening the monitor late misses the startup
+prints, which looks like the sketch isn't running when it actually is.
 
 **Test passes if:** you see a grid of numbers, roughly 20 to 30 (room
 temperature in Celsius). **Now put your hand in front of the sensor** — the
 numbers where your hand is should jump to around 30–35. That is your first
 thermal image. This is the moment the project becomes real.
 
+**Confirmed working:** this exact wiring and code streams a full 32×24 grid
+at 8 Hz, ambient ~27 °C, hand-in-frame ~33–37 °C.
+
 **If it says "MLX90640 not found":**
+- Check `PS` is tied to GND, and that you power-cycled USB after wiring it
 - Check SDA and SCL are not swapped
 - Check the sensor is on 3.3 V, not 5 V
-- Try adding 4.7 kΩ pull-up resistors from SDA to 3.3 V and SCL to 3.3 V
-  (most breakout boards already have these built in, but some clones do not)
+- Check the 4.7 kΩ pull-ups are in place
+
+**If it finds the sensor but every `getFrame()` fails with error `-8`:**
+the I2C clock is too slow for the refresh rate — see the code comment above.
+Either raise `Wire.setClock()` toward 400000, or lower
+`mlx.setRefreshRate()` to `MLX90640_2_HZ`. Prefer raising the clock — NOVIS's
+protocol and throughput numbers assume 8 Hz thermal, so shipping at a lower
+rate is a real design change that has to be written down, not a quick fix.
 
 ---
 
@@ -368,8 +454,8 @@ before wiring.**
 #### The 5 V problem
 
 The HC-SR04 is designed for **5 V**. Its ECHO pin outputs a **5 V** signal.
-The nRF52840's pins accept a maximum of **3.3 V**. Connecting the ECHO pin
-directly to the nRF52840 **can permanently destroy the chip**.
+The ESP32's GPIO pins accept a maximum of **3.3 V**. Connecting the ECHO pin
+directly to the ESP32 **can permanently destroy the chip**.
 
 **The fix: a voltage divider.** This is two resistors that cut the 5 V down
 to about 3.3 V. You need one for each HC-SR04, so two in total.
@@ -381,27 +467,28 @@ to about 3.3 V. You need one for each HC-SR04, so two in total.
 For each sensor:
 
 ```
-HC-SR04 ECHO pin ----[ 1 kΩ ]----+----> to nRF52840 input pin
+HC-SR04 ECHO pin ----[ 1 kΩ ]----+----> to ESP32 input pin
                                   |
                                [ 2 kΩ ]
                                   |
                                  GND
 ```
 
-The point where the two resistors meet is what goes to the nRF52840. This
+The point where the two resistors meet is what goes to the ESP32. This
 gives 5 V × (2 / (1+2)) = **3.33 V**. Safe.
 
-The TRIG pin needs no divider — that is an output from the nRF52840 to the
+The TRIG pin needs no divider — that is an output from the ESP32 to the
 sensor, and 3.3 V is enough to trigger it.
 
 #### Powering the HC-SR04
 
 Here is a real issue you should know about now, not discover later:
 
-- **On USB power:** your board has a 5 V pin (often labelled `VBUS`,
-  `RAW`, or `5V`). Use that for the HC-SR04's VCC. Works perfectly.
-- **On battery power:** the board only produces 3.3 V. There is no 5 V.
-  Many HC-SR04 modules become unreliable or stop working below about 4.5 V.
+- **On USB power:** the DevKit has a **5V** (VIN) pin fed straight from USB.
+  Use that for the HC-SR04's VCC. Works perfectly.
+- **On battery power:** the board's onboard regulator only outputs 3.3 V to
+  the rest of the circuit unless you feed 5V+ into VIN. Many HC-SR04 modules
+  become unreliable or stop working below about 4.5 V.
 
 **What to do:** do all bench testing on USB power first. When you move to
 battery, test whether your specific HC-SR04 units still work at 3.3 V — some
@@ -412,23 +499,28 @@ in the paper's hardware section.
 
 #### Wiring
 
-| HC-SR04 pin | Connect to |
+Picking pins that don't collide with the MLX90640's I2C on GPIO21/22:
+
+| HC-SR04 pin | Connect to ESP32 |
 |---|---|
-| VCC | 5 V (USB) — see note above |
-| GND | GND |
-| TRIG | any free GPIO pin (direct, no resistors) |
-| ECHO | **through the voltage divider** → any free GPIO pin |
+| LEFT VCC | 5V (USB) — see note above |
+| LEFT GND | GND |
+| LEFT TRIG | **GPIO16** (direct, no resistors) |
+| LEFT ECHO | **through the voltage divider** → **GPIO17** |
+| RIGHT VCC | 5V |
+| RIGHT GND | GND |
+| RIGHT TRIG | **GPIO18** (direct, no resistors) |
+| RIGHT ECHO | **through the voltage divider** → **GPIO19** |
 
 Do the **left** sensor first. Test it. Then add the **right** one.
 
 #### Test code
 
 ```cpp
-// Change these to whichever pins you actually used
-#define TRIG_LEFT   2
-#define ECHO_LEFT   3
-#define TRIG_RIGHT  4
-#define ECHO_RIGHT  5
+#define TRIG_LEFT   16
+#define ECHO_LEFT   17
+#define TRIG_RIGHT  18
+#define ECHO_RIGHT  19
 
 void setup() {
   Serial.begin(115200);
@@ -492,64 +584,70 @@ wires plus power.
 
 #### Wiring
 
-![Microphone wiring: 3.3 V, GND, SCK, WS and SD between the nRF52840 and the INMP441, with the L/R pin tied to ground.](figs/fig_wire_mic.png)
+![Microphone wiring: 3.3 V, GND, SCK, WS and SD between the ESP32 and the INMP441, with the L/R pin tied to ground.](figs/fig_wire_mic.png)
 
-| INMP441 pin | Connect to |
+This pinout is the one our specific module's vendor page recommends, and it
+avoids every pin already used by I2C (21/22) or the ultrasonic sensors
+(16–19):
+
+| INMP441 pin | Connect to ESP32 |
 |---|---|
 | VDD | 3.3 V |
 | GND | GND |
-| SD (data out) | any free GPIO |
-| WS (or LRCL) | any free GPIO |
-| SCK (or BCLK) | any free GPIO |
+| SD (data out) | **GPIO32** |
+| WS (or LRCL) | **GPIO15** |
+| SCK (or BCLK) | **GPIO14** |
 | L/R | **GND** (this selects the left channel) |
 
 > The `L/R` pin **must** be connected to GND. If it is left floating, the
 > microphone may output nothing at all.
+>
+> **Note on GPIO15:** this is one of the ESP32's boot-strapping pins (it
+> affects the boot-time log verbosity). It settles into a normal GPIO once
+> the chip has booted, and this is a very commonly used INMP441 wiring, but
+> if you see strange behaviour only right at power-on, this pin is worth
+> re-checking.
 
 #### Test code
 
-The nRF52840 has a built-in I2S peripheral. This code configures it
-directly.
+⚠️ **Update, 1 Sept 2026:** this has now been wired and run on real hardware.
+Peak levels of roughly 70,000–660,000 were observed, which rules out the two
+specific failure patterns below (stuck at 0, stuck at one huge constant value)
+— but a proper quiet-room-vs-clap comparison, which is what actually proves a
+pass, has not been done yet. Treat this as "signal present, not yet confirmed
+passing" rather than either a pass or a fail.
 
 ```cpp
-#include <Arduino.h>
-#include <nrf.h>
+#include <driver/i2s.h>
 
-// Change these to the pins you actually used
-#define I2S_SCK_PIN   6    // bit clock
-#define I2S_LRCK_PIN  7    // word select
-#define I2S_SD_PIN    8    // data in from the microphone
+#define I2S_SCK_PIN   14   // bit clock
+#define I2S_WS_PIN    15   // word select
+#define I2S_SD_PIN    32   // data in from the microphone
+#define I2S_PORT      I2S_NUM_0
 
 #define SAMPLES 256
 static int32_t rxBuffer[SAMPLES];
 
 void i2sBegin() {
-  NRF_I2S->CONFIG.MODE     = I2S_CONFIG_MODE_MODE_Master     << I2S_CONFIG_MODE_MODE_Pos;
-  NRF_I2S->CONFIG.RXEN     = I2S_CONFIG_RXEN_RXEN_Enabled    << I2S_CONFIG_RXEN_RXEN_Pos;
-  NRF_I2S->CONFIG.TXEN     = I2S_CONFIG_TXEN_TXEN_Disabled   << I2S_CONFIG_TXEN_TXEN_Pos;
-  NRF_I2S->CONFIG.MCKEN    = I2S_CONFIG_MCKEN_MCKEN_Enabled  << I2S_CONFIG_MCKEN_MCKEN_Pos;
-
-  // Master clock 32 MHz / 31 = 1.032 MHz;  1.032 MHz / 64 = 16.1 kHz sample rate.
-  // This is close enough to our target of 16 kHz.
-  NRF_I2S->CONFIG.MCKFREQ  = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV31 << I2S_CONFIG_MCKFREQ_MCKFREQ_Pos;
-  NRF_I2S->CONFIG.RATIO    = I2S_CONFIG_RATIO_RATIO_64X          << I2S_CONFIG_RATIO_RATIO_Pos;
-
-  NRF_I2S->CONFIG.SWIDTH   = I2S_CONFIG_SWIDTH_SWIDTH_24Bit  << I2S_CONFIG_SWIDTH_SWIDTH_Pos;
-  NRF_I2S->CONFIG.ALIGN    = I2S_CONFIG_ALIGN_ALIGN_Left     << I2S_CONFIG_ALIGN_ALIGN_Pos;
-  NRF_I2S->CONFIG.FORMAT   = I2S_CONFIG_FORMAT_FORMAT_I2S    << I2S_CONFIG_FORMAT_FORMAT_Pos;
-  NRF_I2S->CONFIG.CHANNELS = I2S_CONFIG_CHANNELS_CHANNELS_Left << I2S_CONFIG_CHANNELS_CHANNELS_Pos;
-
-  NRF_I2S->PSEL.SCK   = (I2S_SCK_PIN  << I2S_PSEL_SCK_PIN_Pos);
-  NRF_I2S->PSEL.LRCK  = (I2S_LRCK_PIN << I2S_PSEL_LRCK_PIN_Pos);
-  NRF_I2S->PSEL.SDIN  = (I2S_SD_PIN   << I2S_PSEL_SDIN_PIN_Pos);
-  NRF_I2S->PSEL.MCK   = 0x80000000;   // master clock output not used
-  NRF_I2S->PSEL.SDOUT = 0x80000000;   // no output
-
-  NRF_I2S->RXD.PTR      = (uint32_t)rxBuffer;
-  NRF_I2S->RXTXD.MAXCNT = SAMPLES;
-
-  NRF_I2S->ENABLE = 1;
-  NRF_I2S->TASKS_START = 1;
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = SAMPLES,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD_PIN
+  };
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
 }
 
 void setup() {
@@ -560,15 +658,14 @@ void setup() {
 }
 
 void loop() {
-  // Wait until one buffer of samples has been received
-  NRF_I2S->EVENTS_RXPTRUPD = 0;
-  NRF_I2S->RXD.PTR = (uint32_t)rxBuffer;
-  while (NRF_I2S->EVENTS_RXPTRUPD == 0) { }
-  NRF_I2S->EVENTS_RXPTRUPD = 0;
+  // Blocks until one buffer of samples has been received
+  size_t bytesRead = 0;
+  i2s_read(I2S_PORT, rxBuffer, sizeof(rxBuffer), &bytesRead, portMAX_DELAY);
+  int samples = bytesRead / sizeof(int32_t);
 
   // Find the loudest sample in this buffer, so we can see if sound is detected
   int32_t peak = 0;
-  for (int i = 0; i < SAMPLES; i++) {
+  for (int i = 0; i < samples; i++) {
     int32_t s = rxBuffer[i] >> 8;   // 24-bit sample sitting in a 32-bit word
     if (s > peak)  peak = s;
     if (-s > peak) peak = -s;
@@ -586,7 +683,8 @@ is quiet, and jumps up sharply when you clap or speak near the microphone.
 **If the number is always 0:**
 - Check `L/R` is connected to GND
 - Check SD, WS, and SCK are not swapped
-- Try changing `SWIDTH` from `24Bit` to `16Bit`
+- Try changing `I2S_BITS_PER_SAMPLE_32BIT` to `I2S_BITS_PER_SAMPLE_16BIT`
+  (and drop the `>> 8` shift accordingly)
 
 **If the number is always huge and does not change:** the data pin is
 probably floating — check the SD wire.
@@ -597,27 +695,49 @@ probably floating — check the SD wire.
 
 #### Wiring
 
-The PAM8302 sits between the nRF52840 and the speaker. It makes a weak
+The PAM8302 sits between the ESP32 and the speaker. It makes a weak
 signal loud enough to be useful.
 
-![Chirp emitter wiring: the nRF52840 PWM pin drives the PAM8302 input, and the amplifier output drives the speaker.](figs/fig_wire_speaker.png)
+![Chirp emitter wiring: the ESP32 PWM pin drives the PAM8302 input, and the amplifier output drives the speaker.](figs/fig_wire_speaker.png)
 
-| PAM8302 pin | Connect to |
+| PAM8302 pin | Connect to ESP32 |
 |---|---|
 | VIN | 3.3 V (or 5 V from USB for a louder chirp) |
 | GND | GND |
-| A+ (audio in +) | any free GPIO on the nRF52840 |
+| A+ (audio in +) | **GPIO4** |
 | A− (audio in −) | GND |
+| **SD** (if your board breaks it out) | **VIN** — see note below |
 | OUT+ | speaker terminal 1 |
 | OUT− | speaker terminal 2 |
 
-> Do **not** connect the speaker directly to the nRF52840 pin without the
+> Do **not** connect the speaker directly to the ESP32 pin without the
 > amplifier. The chip cannot supply enough current and you may damage it.
+>
+> `tone()`/`noTone()` work on the ESP32 Arduino core exactly as they do on
+> AVR/nRF52 boards (they're backed by the LEDC peripheral) — confirmed by
+> compiling this exact sketch, no changes needed beyond the pin number.
+>
+> **If your PAM8302 board has a separate `SD` (shutdown) pin, it must be
+> tied to VIN, or the amp stays muted no matter what signal reaches A+.**
+> The Adafruit-layout PAM8302A breakout (silkscreen: `A+ / SD / Vin / Gnd`
+> along one edge) does this — we hit exactly this on our own build: SD was
+> left floating, VIN measured a correct 4.8 V, A+ was wired correctly, and
+> there was still no sound until SD was tied to VIN. This is just tapping
+> the same power rail twice, not a real second connection — it doesn't
+> conflict with anything else.
+>
+> **Also worth checking before assuming the code is wrong: solder joints,
+> not just the schematic.** If your speaker has a JST-PH2.0 connector, it
+> will not plug into this board — cut it off, strip the wires (red = OUT+,
+> black = OUT−; reversed polarity is harmless, just an inaudible phase
+> flip), and make sure they're actually soldered to OUT+/OUT−, not just
+> looped through the hole and twisted. A twisted-not-soldered connection can
+> look fine and still make poor contact.
 
 #### Test code
 
 ```cpp
-#define SPEAKER_PIN 9   // change to your pin
+#define SPEAKER_PIN 4
 
 void setup() {
   Serial.begin(115200);
@@ -652,11 +772,105 @@ it back to 250 afterwards.**
 
 #### Now test the microphone and speaker together
 
-This is the real echo test. Upload a sketch that emits a chirp and then
-immediately prints the microphone peak levels. Point the node at a wall
-about 1 metre away. You should see the peak level spike right after each
-chirp — that spike is the echo coming back. **That is echolocation
-working.**
+This is the real echo test — and it also gives you an objective way to
+confirm the chirp exists at all, which matters because a 5 ms tone is easy
+to miss by ear and hard to debug from "I can't hear it" alone. Combine the
+B4 and B5 code so the microphone reports a number instead of asking a human
+ear to make the call:
+
+```cpp
+#include <driver/i2s.h>
+
+#define SPEAKER_PIN   4
+#define I2S_SCK_PIN   14
+#define I2S_WS_PIN    15
+#define I2S_SD_PIN    32
+#define I2S_PORT      I2S_NUM_0
+#define SAMPLES       256
+
+static int32_t rxBuffer[SAMPLES];
+
+void i2sBegin() {
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = SAMPLES,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD_PIN
+  };
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
+}
+
+int32_t readMicPeak() {
+  size_t bytesRead = 0;
+  i2s_read(I2S_PORT, rxBuffer, sizeof(rxBuffer), &bytesRead, portMAX_DELAY);
+  int samples = bytesRead / sizeof(int32_t);
+  int32_t peak = 0;
+  for (int i = 0; i < samples; i++) {
+    int32_t s = rxBuffer[i] >> 8;
+    if (s > peak) peak = s;
+    if (-s > peak) peak = -s;
+  }
+  return peak;
+}
+
+void emitChirp() {
+  const int steps = 20;
+  for (int i = 0; i < steps; i++) {
+    float t = (float)i / (float)(steps - 1);
+    int freq = (int)(1000.0f * powf(8.0f, t));
+    tone(SPEAKER_PIN, freq);
+    delayMicroseconds(250);
+  }
+  noTone(SPEAKER_PIN);
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SPEAKER_PIN, OUTPUT);
+  i2sBegin();
+  Serial.println("Chirp + mic combined test starting...");
+}
+
+void loop() {
+  int32_t before = readMicPeak();
+  Serial.print("Mic peak BEFORE chirp: ");
+  Serial.println(before);
+
+  emitChirp();
+
+  int32_t after = readMicPeak();
+  Serial.print("Mic peak DURING/AFTER chirp: ");
+  Serial.println(after);
+  Serial.println("-----");
+
+  delay(1500);
+}
+```
+
+Point the node at a wall about 1 metre away. **Test passes if:** the "AFTER"
+number spikes clearly above "BEFORE" right after each chirp — that spike is
+the echo coming back. **That is echolocation working**, whether or not you
+can hear the chirp yourself.
+
+> **If B5's amp+speaker still seems silent before you get here:** try the
+> "pop test" first. With everything powered, briefly touch the PAM8302's A+
+> wire to VIN and release. A working amp+speaker chain makes an audible pop
+> with no code involved at all. Pop = the problem is upstream (GPIO4 wiring
+> or the chirp code) — this combined sketch will help. No pop = the problem
+> is downstream, in the OUT+/OUT− connection or the speaker itself — go
+> check solder joints before debugging code any further.
 
 ---
 
@@ -664,24 +878,31 @@ working.**
 
 Now connect everything at once, on one breadboard.
 
-![The complete node: thermal, two ultrasonic modules, microphone, amplifier and speaker all connected to the nRF52840, powered by the LiPo cell.](figs/fig_wire_full.png)
+![The complete node: thermal, two ultrasonic modules, microphone, amplifier and speaker all connected to the ESP32, powered by the LiPo cell.](figs/fig_wire_full.png)
 
-**Suggested pin plan** — fill in the right-hand column with the pins you
-actually used, and keep this table. You will need it for the firmware and
-for the paper's hardware section.
+**Pin plan** — the values below are what each individual test in this Part
+actually used and passed (B2, B3) or compiled clean against (B4, B5). Keep
+this table; you will need it for the firmware and for the paper's hardware
+section.
 
-| Signal | Goes to which nRF52840 pin? |
+| Signal | ESP32 pin |
 |---|---|
-| MLX90640 SDA | ____ |
-| MLX90640 SCL | ____ |
-| HC-SR04 left TRIG | ____ |
-| HC-SR04 left ECHO (via divider) | ____ |
-| HC-SR04 right TRIG | ____ |
-| HC-SR04 right ECHO (via divider) | ____ |
-| INMP441 SCK | ____ |
-| INMP441 WS / LRCL | ____ |
-| INMP441 SD | ____ |
-| Speaker / PAM8302 input | ____ |
+| MLX90640 SDA | GPIO21 |
+| MLX90640 SCL | GPIO22 |
+| MLX90640 PS | GND (required — see B2) |
+| HC-SR04 left TRIG | GPIO16 |
+| HC-SR04 left ECHO (via divider) | GPIO17 |
+| HC-SR04 right TRIG | GPIO18 |
+| HC-SR04 right ECHO (via divider) | GPIO19 |
+| INMP441 SCK | GPIO14 |
+| INMP441 WS / LRCL | GPIO15 |
+| INMP441 SD | GPIO32 |
+| Speaker / PAM8302 input | GPIO4 |
+| PAM8302 SD (if present) | VIN (required — see B5) |
+
+Double-check these against whatever you actually wired before trusting this
+table for the firmware — if a real conflict or a better pin turns up during
+assembly, update the table, don't silently wire around it.
 
 **Physical layout matters.** Our design assumes:
 - The microphone sits about **3 cm from the speaker**
@@ -706,48 +927,68 @@ check that every module shares a common GND.
 Now we replace the placeholder code in the repository with the real code
 you just tested.
 
+> ⚠️ **This whole Part was written when the node was an nRF52840, and the
+> "already done" claim below is no longer true for the ESP32.** The
+> repository's `novis_node.ino` and `protocol.h` implement Bluetooth using
+> **Adafruit Bluefruit**, which is an nRF52-only library — it does not exist
+> on ESP32. The ESP32's BLE stack (`BLEDevice.h`, built into the `esp32`
+> board package, or the third-party `NimBLE-Arduino` library) has a
+> different API. **Someone needs to port the BLE server side of
+> `novis_node.ino` to an ESP32 BLE library before Part C3's upload test can
+> pass.** This has not been done or attempted yet in this project — it is
+> real, non-trivial remaining work, not a small tweak. Everything below that
+> touches sensors and encryption *has* been ported and, where noted,
+> compile-tested against the ESP32 toolchain.
+
 ### What is already done for you
 
-The repository at `firmware/novis_node/` already contains all the difficult
-structural code:
+The repository at `firmware/novis_node/` contains the structural code:
 
 | File | What it does | Status |
 |---|---|---|
-| `novis_node.ino` | Main loop, Bluetooth, timing | ✅ Done |
-| `protocol.h` | Packet format | ✅ Done |
+| `novis_node.ino` | Main loop, Bluetooth, timing | ⚠️ **Bluetooth section needs an ESP32 BLE rewrite** — see above |
+| `protocol.h` | Packet format | ✅ Done — transport-independent, no MCU-specific code |
 | `sensors.h` | Function definitions | ✅ Done |
-| `sensors.cpp` | Sensor reading | ❌ **You write this** |
+| `sensors.cpp` | Sensor reading | ❌ **You write this** — ESP32 version below, built from the B2–B5 code that passed/compiled in Part B |
 | `crypto.h` | Encryption definitions | ✅ Done |
-| `crypto.cpp` | Encryption | ❌ **You write this** |
+| `crypto.cpp` | Encryption | ❌ **You write this** — confirmed to compile unchanged on ESP32 |
 
-So your job is only two files. Everything else already works.
+So two files are the same "you write this" job as before, but the main
+sketch needs real work too, not just a pin-number find-and-replace.
 
 ### C1. Write `sensors.cpp`
 
 Open `firmware/novis_node/sensors.cpp` and **replace its entire contents**
-with this. This is your tested code from Part B, fitted into the shape the
-rest of the firmware expects.
+with this. This is the B2–B5 code from Part B, combined into the shape the
+rest of the firmware expects, targeting the ESP32's I2C and I2S peripherals
+instead of the nRF52's. **This combined file has been compile-tested as a
+whole** (not just each piece separately) against the ESP32 toolchain —
+thermal, both sonars, mic, and chirp together, no conflicts. It has not yet
+been run on the fully assembled hardware (B6).
 
 ```cpp
-// NOVIS sensor drivers — real implementations.
+// NOVIS sensor drivers — real implementations (ESP32).
 #include "sensors.h"
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MLX90640.h>
-#include <nrf.h>
+#include <driver/i2s.h>
 
 // ---------------------------------------------------------------
-// PIN ASSIGNMENTS — change these to match your actual wiring (Part B6)
+// PIN ASSIGNMENTS — from the B6 pin plan; update if yours differs
 // ---------------------------------------------------------------
-#define TRIG_LEFT     2
-#define ECHO_LEFT     3
-#define TRIG_RIGHT    4
-#define ECHO_RIGHT    5
-#define I2S_SCK_PIN   6
-#define I2S_LRCK_PIN  7
-#define I2S_SD_PIN    8
-#define SPEAKER_PIN   9
+#define I2C_SDA_PIN   21
+#define I2C_SCL_PIN   22
+#define TRIG_LEFT     16
+#define ECHO_LEFT     17
+#define TRIG_RIGHT    18
+#define ECHO_RIGHT    19
+#define I2S_SCK_PIN   14
+#define I2S_WS_PIN    15
+#define I2S_SD_PIN    32
+#define SPEAKER_PIN   4
+#define I2S_PORT      I2S_NUM_0
 
 // ---------------------------------------------------------------
 // Thermal
@@ -763,39 +1004,31 @@ static bool  mlxOk = false;
 static int32_t i2sBuf[I2S_CHUNK];
 
 static void i2sBegin() {
-  NRF_I2S->CONFIG.MODE     = I2S_CONFIG_MODE_MODE_Master       << I2S_CONFIG_MODE_MODE_Pos;
-  NRF_I2S->CONFIG.RXEN     = I2S_CONFIG_RXEN_RXEN_Enabled      << I2S_CONFIG_RXEN_RXEN_Pos;
-  NRF_I2S->CONFIG.TXEN     = I2S_CONFIG_TXEN_TXEN_Disabled     << I2S_CONFIG_TXEN_TXEN_Pos;
-  NRF_I2S->CONFIG.MCKEN    = I2S_CONFIG_MCKEN_MCKEN_Enabled    << I2S_CONFIG_MCKEN_MCKEN_Pos;
-  NRF_I2S->CONFIG.MCKFREQ  = I2S_CONFIG_MCKFREQ_MCKFREQ_32MDIV31 << I2S_CONFIG_MCKFREQ_MCKFREQ_Pos;
-  NRF_I2S->CONFIG.RATIO    = I2S_CONFIG_RATIO_RATIO_64X        << I2S_CONFIG_RATIO_RATIO_Pos;
-  NRF_I2S->CONFIG.SWIDTH   = I2S_CONFIG_SWIDTH_SWIDTH_24Bit    << I2S_CONFIG_SWIDTH_SWIDTH_Pos;
-  NRF_I2S->CONFIG.ALIGN    = I2S_CONFIG_ALIGN_ALIGN_Left       << I2S_CONFIG_ALIGN_ALIGN_Pos;
-  NRF_I2S->CONFIG.FORMAT   = I2S_CONFIG_FORMAT_FORMAT_I2S      << I2S_CONFIG_FORMAT_FORMAT_Pos;
-  NRF_I2S->CONFIG.CHANNELS = I2S_CONFIG_CHANNELS_CHANNELS_Left << I2S_CONFIG_CHANNELS_CHANNELS_Pos;
-
-  NRF_I2S->PSEL.SCK   = (I2S_SCK_PIN  << I2S_PSEL_SCK_PIN_Pos);
-  NRF_I2S->PSEL.LRCK  = (I2S_LRCK_PIN << I2S_PSEL_LRCK_PIN_Pos);
-  NRF_I2S->PSEL.SDIN  = (I2S_SD_PIN   << I2S_PSEL_SDIN_PIN_Pos);
-  NRF_I2S->PSEL.MCK   = 0x80000000;
-  NRF_I2S->PSEL.SDOUT = 0x80000000;
-
-  NRF_I2S->RXD.PTR      = (uint32_t)i2sBuf;
-  NRF_I2S->RXTXD.MAXCNT = I2S_CHUNK;
-
-  NRF_I2S->ENABLE = 1;
-  NRF_I2S->TASKS_START = 1;
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = I2S_CHUNK,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD_PIN
+  };
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
 }
 
 // Read one chunk of I2S samples into i2sBuf. Blocks until the chunk is full.
 static void i2sReadChunk() {
-  NRF_I2S->RXD.PTR = (uint32_t)i2sBuf;
-  NRF_I2S->EVENTS_RXPTRUPD = 0;
-  uint32_t guard = 0;
-  while (NRF_I2S->EVENTS_RXPTRUPD == 0) {
-    if (++guard > 2000000UL) break;   // safety: never hang forever
-  }
-  NRF_I2S->EVENTS_RXPTRUPD = 0;
+  size_t bytesRead = 0;
+  i2s_read(I2S_PORT, i2sBuf, sizeof(i2sBuf), &bytesRead, portMAX_DELAY);
 }
 
 // ---------------------------------------------------------------
@@ -817,8 +1050,8 @@ static void emitChirp() {
 // ---------------------------------------------------------------
 
 bool sensors_begin(void) {
-  Wire.begin();
-  Wire.setClock(400000);   // fast I2C, needed to keep up at 8 Hz
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(400000);   // required to keep up with 8 Hz thermal frames — see B2
 
   mlxOk = mlx.begin(MLX90640_I2CADDR_DEFAULT, &Wire);
   if (mlxOk) {
@@ -899,13 +1132,16 @@ bool sensors_read_sonar(uint16_t *left, uint16_t *right, uint8_t *status) {
 }
 ```
 
-> **Important:** update the eight `#define` lines at the top to match the
-> pins you actually wired in Part B6. This is the number one cause of "it
-> compiled but nothing works".
+> **Important:** update the pin `#define` lines at the top to match the pins
+> you actually wired in Part B6 if they differ from this table. Mismatched
+> pins are the number one cause of "it compiled but nothing works".
 
 ### C2. Write `crypto.cpp`
 
-Create a **new file** in the same folder called `crypto.cpp` and paste this:
+Create a **new file** in the same folder called `crypto.cpp` and paste this.
+Unlike `sensors.cpp`, **nothing in this file is MCU-specific** — the `Crypto`
+library is portable, and this exact code has been compile-tested unchanged
+on the ESP32 toolchain:
 
 ```cpp
 // NOVIS AEAD implementation using ChaCha20-Poly1305.
@@ -955,8 +1191,14 @@ size_t crypto_seal(uint64_t counter, const uint8_t *frame, size_t len,
 
 ### C3. Upload the firmware
 
+⚠️ **This step cannot pass yet on the ESP32 as the repository stands.**
+`novis_node.ino` won't even compile until its Bluefruit-based BLE code is
+replaced with an ESP32 BLE library (see the warning at the top of this
+Part) — that port is real remaining work, not done in this project yet.
+Once someone has done it:
+
 1. In Arduino IDE, open `firmware/novis_node/novis_node.ino`
-2. Select your board and port
+2. Select **ESP32 Dev Module** and the correct port
 3. Click **Upload**
 
 **Test passes if:** the board appears in your phone's Bluetooth scanner (or
@@ -1223,6 +1465,18 @@ This is real scientific contribution.
 **What the paper currently claims (estimated):** 36.5 mA total, 3.3 hours of
 battery life.
 
+> ⚠️ **These estimates were derived for the nRF52840 and almost certainly no
+> longer apply.** The ESP32 is a dual-core Xtensa chip with a combined
+> Wi-Fi/BLE radio, and is well known to draw substantially more current than
+> a BLE-only chip like the nRF52840 — active current is commonly tens of mA
+> even with Wi-Fi off, and can spike over 100 mA during radio activity,
+> versus single-digit mA typical for nRF52840 BLE. **Do not reuse the
+> "Estimated (mA)" column below for the ESP32** — it is nRF52840 data. Measure
+> fresh numbers per the procedure here, and if the real battery life turns
+> out much shorter than 3.3 hours, that is an expected, honest consequence
+> of the board swap and needs to be stated plainly in the paper, not
+> smoothed over.
+
 **How to measure it properly:**
 
 1. Set your multimeter to measure **current** (the mA setting)
@@ -1373,15 +1627,27 @@ python eval.py --config configs/base.yaml --ckpt checkpoints/base/best.pt --data
 
 ### The board does not appear as a serial port
 
-Double-tap the reset button quickly. A USB drive should appear. Then try
-uploading again. Also check your USB cable actually carries data — many
-cheap cables only charge.
+Check your USB cable actually carries data — many cheap cables only charge.
+If the cable is fine but Windows shows the port in an error state (or no
+port at all), the CP2102 USB-to-UART driver is probably missing — see the
+troubleshooting note at the end of B1. If upload gets stuck at
+"Connecting...", hold **BOOT** and try again, releasing it once the upload
+starts progressing.
 
 ### "MLX90640 not found"
 
+- **Check `PS` is tied to GND, and that you power-cycled USB after wiring
+  it** — this was the actual cause of our own multi-day version of this
+  exact error. See Part B2.
 - SDA and SCL swapped — try switching them
 - Sensor connected to 5 V instead of 3.3 V
 - Missing pull-up resistors — add 4.7 kΩ from SDA to 3.3 V and SCL to 3.3 V
+
+### "MLX90640 found!" but `getFrame()` keeps failing with error `-8`
+
+The I2C clock is too slow to keep up with the refresh rate you set — see the
+worked explanation in Part B2. Raise `Wire.setClock()` toward 400000, or as
+a fallback lower `mlx.setRefreshRate()`.
 
 ### Ultrasonic always reads 0
 

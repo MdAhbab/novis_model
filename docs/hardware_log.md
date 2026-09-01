@@ -1,9 +1,17 @@
 # NOVIS Hardware — Build Log & Handoff
 
-**Branch:** `Hardware` · **Covers:** Part B of `docs/NOVIS_Build_Guide.md` · **Updated:** 30 Aug 2026
+**Branch:** `Hardware` · **Covers:** Part B of `docs/NOVIS_Build_Guide.md` · **Updated:** 1 Sept 2026
 
 Read this before touching the hardware. It says what we are building, how far we
 got, what is broken, and what has already been tried so nobody repeats it.
+
+> **Board decision (1 Sept 2026): the node MCU is now ESP32-WROOM-32, permanently —
+> not just for debugging.** It was already doing double duty as our debug board for
+> B2 (section 3b as it used to be), and after the nRF52840 ProMicro clone's fiddly
+> UF2 bootloader and unreliable serial cost more time than the sensors themselves,
+> the team switched for good. `docs/NOVIS_Build_Guide.md` has been updated to match.
+> Section 3 below keeps the nRF52840 notes — they're hard-won and still useful if
+> anyone ever needs that board again — but relabelled as historical, not current.
 
 ---
 
@@ -14,7 +22,7 @@ NOVIS makes a picture of a room **without a camera**.
 ```
 MLX90640 thermal + 2x HC-SR04 sonar + INMP441 mic/speaker echo
         |
-    nRF52840 node   <- only senses, packs, encrypts. No AI here.
+    ESP32 node   <- only senses, packs, encrypts. No AI here.
         |
     BLE (ChaCha20-Poly1305 encrypted)
         |
@@ -42,26 +50,28 @@ five wired at once it would have been hopeless.
 | Part | What | Status |
 |---|---|---|
 | A | Toolchain, libraries | **done** |
-| B1 | nRF52840 alive (Blink) | **PASS** |
-| B2 | MLX90640 thermal | **PASS** — at full 8 Hz, see section 4 |
-| B3 | HC-SR04 x2 | **code ready, compiled clean** — wiring pending, see section 6 |
-| B4 | INMP441 mic | not started |
-| B5 | PAM8302 + speaker | not started |
+| B1 | Board alive (Blink) | **PASS** (on the nRF52840, before the board switch) |
+| B2 | MLX90640 thermal | **PASS** — ESP32, full 8 Hz, see section 4 |
+| B3 | HC-SR04 x2 | **wired, testing** — readings unstable, see section 6 |
+| B4 | INMP441 mic | **wired, testing** — signal present, pass not yet confirmed, see section 7 |
+| B5 | PAM8302 + speaker | **wired, no sound yet** — actively debugging, see section 8 |
 | B6 | Full assembly | not started |
-| C | `sensors.cpp`, `crypto.cpp` | not started |
+| C | `sensors.cpp`, `crypto.cpp` | not started — needs an ESP32 BLE rewrite, see section 9 |
 | D | Host BLE receive | not started |
 | E | 12-scene capture | **start ethics paperwork now** — takes weeks |
 | F | Power/range/latency | not started |
 
 B2 took most of two days. Section 4 explains why, because the cause was not
-anything the build guide warns about, and the same trap is waiting in B4 and in
-Part C. **B3 is next** — section 6 has the pin plan and a compiled, ready-to-flash
-test sketch; wiring it up is the only remaining step.
+anything the build guide warns about. **B3, B4, and B5 are all wired and being
+tested right now** (1 Sept 2026) — none has a clean, confirmed PASS yet. Sections
+6–8 have the real pin assignments, the actual test code, and exactly what's been
+tried on each so far.
 
 ### Toolchain
 
-Arduino IDE 2.3.10 + Arduino CLI 1.5.1. Cores: `adafruit:nrf52` 1.7.0,
-`esp32:esp32` 3.3.11. Libraries: Adafruit MLX90640 1.1.2, Adafruit BusIO 1.17.4,
+Arduino IDE 2.3.10 + Arduino CLI 1.5.1. Cores: `esp32:esp32` 3.3.11 (current
+target), `adafruit:nrf52` 1.7.0 (kept installed, no longer the target — see the
+board decision above). Libraries: Adafruit MLX90640 1.1.2, Adafruit BusIO 1.17.4,
 Crypto (Rhys Weatherley) 0.4.0.
 
 **The build guide's board URL is dead.** Part A3 says to use
@@ -74,15 +84,22 @@ https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
 ---
 
-## 3. The two boards, and why we used both
+## 3. The two boards, and the switch from one to the other
 
-We started on the **nRF52840** (the real target). When the thermal sensor would not
-work, we moved it to an **ESP32** to answer one question: *does the problem follow
-the sensor, or the board?* It followed the sensor — same failure on both. That is
-why the ESP32 is in this document at all. It stays as a debugging tool; the final
-node is nRF52840, because the firmware, BLE stack and power budget all assume it.
+We started on the **nRF52840** (the original target). When the thermal sensor
+would not work, we moved it to an **ESP32** to answer one question: *does the
+problem follow the sensor, or the board?* It followed the sensor — same failure
+on both — which is why the ESP32 first shows up in this document as just a
+debugging tool.
 
-### 3a. nRF52840 ProMicro (target board)
+It didn't stay a debugging tool. Across B1–B2 the nRF52840's UF2 bootloader,
+unreliable native-USB serial, and the undocumented `Adafruit_TinyUSB` linking
+gotcha (below) ate more time than any sensor did. The ESP32's plain CP2102
+serial port and real EN/BOOT buttons made every single test in this log faster
+to run. **As of 1 Sept 2026 the ESP32 is the permanent node MCU** — section 3a
+below is kept as a historical/reference record, not as the current board.
+
+### 3a. nRF52840 ProMicro — abandoned, kept for reference
 
 A Nice!Nano-compatible clone, silkscreen `V1940`. **It has no `SDA`/`SCL` labels** —
 pads are marked with raw port numbers (`O31`, `O29`, `1.15`, …). Two consequences:
@@ -143,10 +160,10 @@ in, and fails with `undefined reference to 'Serial'` /
 `#include <Adafruit_TinyUSB.h>` at the top, even though nothing in the sketch
 appears to call it directly.
 
-### 3b. ESP32 DevKit (debug only)
+### 3b. ESP32 DevKit — the node MCU (current)
 
-ESP-WROOM-32 with CP2102. Far easier: labelled `3V3`, labelled GPIOs, and real
-`EN` (reset) and `BOOT` buttons.
+ESP-WROOM-32 with CP2102. Labelled `3V3`, labelled GPIOs, real `EN` (reset) and
+`BOOT` buttons. This is the board every section from here on assumes.
 
 | MLX90640 | ESP32 pin |
 |---|---|
@@ -156,6 +173,13 @@ ESP-WROOM-32 with CP2102. Far easier: labelled `3V3`, labelled GPIOs, and real
 | GND | `GND` |
 
 Board: **ESP32 Dev Module** (`esp32:esp32:esp32`), COM8 here.
+
+**Trade-off to write into the paper:** the ESP32 is a WiFi+BLE combo chip and
+draws meaningfully more current than the nRF52840 (a BLE-only radio) — expect
+tens of mA at idle and well over 100 mA during WiFi/BLE activity, versus the
+nRF52840's single-digit-mA idle draw. All of the paper's estimated power/battery
+numbers (Part F1 of the build guide) were sized around the nRF52840 and are now
+invalid. They must be re-measured on the ESP32, not adjusted by guesswork.
 
 - **CP2102 driver:** Windows first showed the device as **Status: Error** with no
   COM port. Fixed by installing Silicon Labs' VCP driver (`CP210x_Windows_Drivers.zip`
@@ -472,65 +496,62 @@ has to succeed too, and for a while it didn't (error -8, see section 4).
 Faster than the IDE and prints real errors.
 
 ```bash
-# nRF52840 (double-tap RST-to-GND first if upload times out)
-arduino-cli compile --fqbn adafruit:nrf52:pca10056 <sketch-dir>
-arduino-cli upload -p COM7 --fqbn adafruit:nrf52:pca10056 <sketch-dir>
-
-# ESP32 (hold BOOT during upload)
+# ESP32 (current board — hold BOOT during upload if it doesn't auto-reset)
 arduino-cli compile --fqbn esp32:esp32:esp32 <sketch-dir>
 arduino-cli upload -p COM8 --fqbn esp32:esp32:esp32 <sketch-dir>
+
+# nRF52840 (abandoned, kept for reference — double-tap RST-to-GND first if upload times out)
+arduino-cli compile --fqbn adafruit:nrf52:pca10056 <sketch-dir>
+arduino-cli upload -p COM7 --fqbn adafruit:nrf52:pca10056 <sketch-dir>
 
 arduino-cli board list      # which port is which
 ```
 
 ---
 
-## 6. Next up — B3: HC-SR04 ultrasonic (wiring pending, code ready)
+## 6. B3 — HC-SR04 ultrasonic (wired, testing — not a confirmed PASS)
 
-Not wired yet, but the pin plan and test sketch are done and compile clean for the
-nRF52840 (`adafruit:nrf52:pca10056`) — do this next, one sensor at a time as usual.
+**Both sensors are wired already**, ahead of the guide's "left first, then right"
+order — worth going back and isolating them if the trouble below doesn't clear up
+quickly, since testing two at once is exactly how you end up unable to tell
+cross-talk from a wiring fault.
 
-**The one real danger in Part B.** HC-SR04 ECHO outputs **5 V**; the nRF52840 is
+**The one real danger in Part B.** HC-SR04 ECHO outputs **5 V**; the ESP32 is
 3.3 V-only and 5 V on a GPIO can destroy it permanently. ECHO must go through a
 1k/2k voltage divider — TRIG does not need one, it's an output.
 
 ```
 HC-SR04 ECHO --[1k]--+--[2k]-- GND
                       |
-                to nRF52840 ECHO pin      (midpoint = 5V x 2/3 = 3.33V)
+                to ESP32 ECHO pin      (midpoint = 5V x 2/3 = 3.33V)
 ```
 
-### Wiring (LEFT sensor first, test, then RIGHT)
+### Wiring (as built)
 
-Picking free pins that don't collide with the MLX90640's I2C on O31/O29:
+Pins chosen to avoid the MLX90640's I2C on GPIO21/22:
 
-| HC-SR04 | Board pad | Notes |
+| HC-SR04 | ESP32 pin | Notes |
 |---|---|---|
-| LEFT VCC | 5V / VBUS | USB power for the bench test — see battery note below |
+| LEFT VCC | 5V / VIN | USB power for the bench test |
 | LEFT GND | GND | |
-| LEFT TRIG | `O17` | direct, no divider |
-| LEFT ECHO | `O20` | **through the divider** |
-| RIGHT VCC | 5V / VBUS | |
+| LEFT TRIG | **GPIO16** | direct, no divider |
+| LEFT ECHO | **GPIO17** | **through the divider** |
+| RIGHT VCC | 5V / VIN | |
 | RIGHT GND | GND | |
-| RIGHT TRIG | `O22` | direct, no divider |
-| RIGHT ECHO | `O24` | **through the divider** |
+| RIGHT TRIG | **GPIO18** | direct, no divider |
+| RIGHT ECHO | **GPIO19** | **through the divider** |
 
-### Test code (compiled clean, not yet run against real hardware)
+### Test code (compiles clean, running on real hardware)
 
 ```cpp
-// Required on this core even though it looks unused — see section 3a's
-// "Serial linking" note. Without it: undefined reference to `Serial'.
-#include <Adafruit_TinyUSB.h>
-
-#define TRIG_LEFT   17
-#define ECHO_LEFT   20
-#define TRIG_RIGHT  22
-#define ECHO_RIGHT  24
+#define TRIG_LEFT   16
+#define ECHO_LEFT   17
+#define TRIG_RIGHT  18
+#define ECHO_RIGHT  19
 
 void setup() {
   Serial.begin(115200);
-  uint32_t t0 = millis();
-  while (!Serial && millis() - t0 < 5000) delay(10);
+  while (!Serial) delay(10);
 
   pinMode(TRIG_LEFT, OUTPUT);
   pinMode(ECHO_LEFT, INPUT);
@@ -566,13 +587,303 @@ void loop() {
 }
 ```
 
-**PASS condition:** readings track a hand moving toward/away from the sensor, and
-match a real ruler within a few mm at 30 cm — same as the guide's B3.
+(No `Adafruit_TinyUSB.h` needed here — that gotcha was specific to the abandoned
+nRF52 core, see section 3a. Plain `Serial` links fine on ESP32.)
 
-### Then keep going: B4–B6
+### Current result: unstable readings, not yet a PASS
 
-- **INMP441 `L/R` must be tied to GND** or the mic outputs nothing at all.
-- **Speaker never connects directly to an MCU pin** — always through the PAM8302.
+With no fixed target in front of the sensors, both LEFT and RIGHT jump around
+with no visible pattern between consecutive reads — e.g. one run showed
+`458 -> 1884 -> 99 -> 1888 -> 0 -> 2209` mm on the same sensor a fraction of a
+second apart. That is not the expected behaviour (real readings should be
+*noisy by a few mm*, not jump by metres), and it has **not yet been tested against
+a fixed target**, so it isn't clear yet whether this is a real fault or just
+ambient room reflections with nothing to lock onto.
+
+**Next step, not yet done:** hold a hand or book at a fixed ~30 cm in front of
+ONE sensor and confirm 5-6 consecutive readings cluster near 290-310 mm before
+judging pass/fail. If it's still erratic with a real, fixed target:
+- re-seat the divider wiring (loose breadboard contact is the usual suspect, as
+  it was for B2)
+- increase the 60 ms gap between LEFT and RIGHT reads — cross-talk from a bigger
+  room won't clear in 60 ms
+- isolate to one sensor at a time as the guide originally intended
+
+## 7. B4 — INMP441 microphone (wired, testing — signal present, PASS not confirmed)
+
+The guide calls this "the hardest step in the build" for a reason we hit
+immediately: **the nRF52 register-level I2S code in the build guide is entirely
+non-portable.** It talks directly to `NRF_I2S`, a peripheral that does not exist
+on the ESP32. This had to be rewritten from scratch using the ESP32's own I2S
+driver (`driver/i2s.h`), not adapted line-by-line.
+
+### Wiring (as built)
+
+Pin choice comes straight from the vendor's own product page for this exact
+compatible module — trusted as authoritative for this specific part:
+
+| INMP441 pin | ESP32 pin |
+|---|---|
+| VDD | 3V3 |
+| GND | GND |
+| SCK (bit clock) | **GPIO14** |
+| WS (word select) | **GPIO15** |
+| SD (data out) | **GPIO32** |
+| **L/R** | **GND** — required, or the mic outputs nothing |
+
+### Test code (ESP32 I2S driver, compiles and runs)
+
+```cpp
+#include <driver/i2s.h>
+
+#define I2S_SCK_PIN   14   // bit clock
+#define I2S_WS_PIN    15   // word select
+#define I2S_SD_PIN    32   // data in from the microphone
+#define I2S_PORT      I2S_NUM_0
+
+#define SAMPLES 256
+static int32_t rxBuffer[SAMPLES];
+
+void i2sBegin() {
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = SAMPLES,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD_PIN
+  };
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) delay(10);
+  Serial.println("INMP441 microphone test...");
+  i2sBegin();
+}
+
+void loop() {
+  size_t bytesRead = 0;
+  i2s_read(I2S_PORT, rxBuffer, sizeof(rxBuffer), &bytesRead, portMAX_DELAY);
+  int samples = bytesRead / sizeof(int32_t);
+
+  int32_t peak = 0;
+  for (int i = 0; i < samples; i++) {
+    int32_t s = rxBuffer[i] >> 8;   // 24-bit sample sitting in a 32-bit word
+    if (s > peak)  peak = s;
+    if (-s > peak) peak = -s;
+  }
+
+  Serial.print("Peak level: ");
+  Serial.println(peak);
+  delay(100);
+}
+```
+
+### Current result: readings in the thousands-to-hundred-thousands range, ambiguous
+
+Observed peak levels ranged from ~72,591 to ~661,616 during ordinary room
+conditions (no controlled quiet/loud comparison done yet). This is well within
+the 24-bit sample range (max ~8.4 million) and is *not* the specific failure
+pattern the guide warns about (stuck at exactly 0, or stuck at one huge constant
+value) — so the mic is very likely picking up real sound. But without a proper
+before/after comparison this isn't a confirmed PASS.
+
+**Next step, not yet done:** record ~10 s of peak levels in a silent room as a
+baseline, then clap once sharply near the mic and confirm the peak spikes to
+clearly above baseline before settling back down. That comparison, not the raw
+numbers alone, is what the guide's PASS condition actually means.
+
+## 8. B5 — PAM8302 + speaker (wired, no confirmed sound yet — actively debugging)
+
+Two real findings so far, both worth keeping regardless of how this resolves,
+because they generalise to any PAM8302 board:
+
+### Finding 1 — the `SD` (shutdown) pin must be tied high
+
+Our PAM8302A breakout (the Adafruit PAM8302A layout: `A+ / SD / Vin / Gnd` along
+the bottom edge, `+` / `-` speaker output pads at the top labelled `4-8R`/`Amp`,
+a trim pot for volume) breaks out an `SD` pin separately. **Left floating, the
+amp stays in shutdown and produces no sound no matter what signal `A+` gets.**
+Fix: wire `SD` to the same `VIN` net the board is already powered from. This is
+just tapping the same rail twice — no conflict with the rest of the wiring.
+
+### Finding 2 — check solder joints, not just schematic correctness
+
+The speaker itself ships with a JST-PH2.0 2-pin connector, which does not mate
+with this PAM8302 board's plated through-holes. The connector has to be cut off
+and the bare wires (red = OUT+, black = OUT-, standard convention — reversed
+polarity is harmless for a single speaker, just an inaudible phase flip) attached
+directly. **A wire looped through the hole and twisted, but not soldered, is a
+real suspect for "everything checks out but there's still no sound"** — it can
+look connected and still have poor or intermittent contact. Solder it, or at
+minimum verify continuity with a multimeter, before ruling out the amp itself.
+
+### Wiring (as built)
+
+| PAM8302 pin | Connect to |
+|---|---|
+| VIN | 3.3V or 5V — measured **4.8 V** in our build, within spec |
+| GND | GND |
+| A+ | **GPIO4** |
+| A- | GND |
+| **SD** | **VIN** (tap the same rail — see Finding 1) |
+| + (OUT+) | Speaker red wire |
+| - (OUT-) | Speaker black wire |
+
+### Test code — chirp only
+
+```cpp
+#define SPEAKER_PIN 4
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SPEAKER_PIN, OUTPUT);
+  Serial.println("Chirp test. Listen for a short rising tone every 2 seconds.");
+}
+
+// Emit a chirp that sweeps from 1 kHz up to 8 kHz.
+void emitChirp() {
+  const int steps = 20;
+  for (int i = 0; i < steps; i++) {
+    float t = (float)i / (float)(steps - 1);
+    int freq = (int)(1000.0f * powf(8.0f, t));
+    tone(SPEAKER_PIN, freq);
+    delay(50);   // TEMPORARY: long/loud for testing. The real design uses
+                 // delayMicroseconds(250) for a 5 ms chirp — change back once
+                 // sound is confirmed, or the paper's chirp-duration number is wrong.
+  }
+  noTone(SPEAKER_PIN);
+}
+
+void loop() {
+  emitChirp();
+  delay(2000);
+}
+```
+
+### Objective test — mic + speaker together (don't trust your ears alone)
+
+Human hearing is a bad instrument for confirming a 5-50 ms chirp exists — this is
+exactly the guide's next step (B5 "test the microphone and speaker together")
+brought forward because "I can't hear it" was too ambiguous to debug against.
+This combines the B4 and B5 code so the mic reports a number instead of asking a
+human ear to make the call:
+
+```cpp
+#include <driver/i2s.h>
+
+#define SPEAKER_PIN   4
+#define I2S_SCK_PIN   14
+#define I2S_WS_PIN    15
+#define I2S_SD_PIN    32
+#define I2S_PORT      I2S_NUM_0
+#define SAMPLES       256
+
+static int32_t rxBuffer[SAMPLES];
+
+void i2sBegin() {
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = SAMPLES,
+    .use_apll = false
+  };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD_PIN
+  };
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
+}
+
+int32_t readMicPeak() {
+  size_t bytesRead = 0;
+  i2s_read(I2S_PORT, rxBuffer, sizeof(rxBuffer), &bytesRead, portMAX_DELAY);
+  int samples = bytesRead / sizeof(int32_t);
+  int32_t peak = 0;
+  for (int i = 0; i < samples; i++) {
+    int32_t s = rxBuffer[i] >> 8;
+    if (s > peak) peak = s;
+    if (-s > peak) peak = -s;
+  }
+  return peak;
+}
+
+void emitChirp() {
+  const int steps = 20;
+  for (int i = 0; i < steps; i++) {
+    float t = (float)i / (float)(steps - 1);
+    int freq = (int)(1000.0f * powf(8.0f, t));
+    tone(SPEAKER_PIN, freq);
+    delay(50);
+  }
+  noTone(SPEAKER_PIN);
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SPEAKER_PIN, OUTPUT);
+  i2sBegin();
+  Serial.println("Chirp + mic combined test starting...");
+}
+
+void loop() {
+  int32_t before = readMicPeak();
+  Serial.print("Mic peak BEFORE chirp: ");
+  Serial.println(before);
+
+  emitChirp();
+
+  int32_t after = readMicPeak();
+  Serial.print("Mic peak DURING/AFTER chirp: ");
+  Serial.println(after);
+  Serial.println("-----");
+
+  delay(1500);
+}
+```
+
+Read it as: a clear spike in "AFTER" versus "BEFORE" means the speaker is making
+sound (even if too quiet/short to hear) and the mic can hear it — a real PASS for
+both B4 and B5's echo test at once. No spike means the fault is still in the
+amp/speaker chain, not human hearing.
+
+### Also useful: the "pop test" to isolate amp+speaker from the MCU signal
+
+Momentarily touch the `A+` wire to `VIN` (power on, one quick touch) — a working
+amp+speaker chain produces an audible "pop" or "click" with no code involved at
+all. Pop = amp and speaker are fine, the problem is upstream (GPIO4 wiring or the
+`tone()` signal). No pop = the problem is downstream (OUT+/OUT- connection or the
+speaker itself) — go straight back to Finding 2 above.
+
+### Status as of last test
+
+`SD` tied to `VIN` (Finding 1) is done. `VIN` confirmed at 4.8 V. Still no audible
+sound. The wire-wrap-not-soldered connection (Finding 2) is the leading suspect
+and has not yet been confirmed fixed. Next step is the pop test, then either the
+combined mic+speaker test above or a straight continuity check on OUT+/OUT-.
+
+### Remaining B6 notes, once B3-B5 all pass individually
+
 - Physical layout matters: mic ~3 cm from speaker, sonars ~20° left and right of
   centre, everything pointing the same way as the thermal array. Keep it rigid.
 - On battery there is no 5 V rail, and many HC-SR04 units stop working below ~4.5 V.
@@ -580,26 +891,36 @@ match a real ruler within a few mm at 30 cm — same as the guide's B3.
   a boost converter — **and we must write down which we used.**
 - **Check every remaining module for a hidden onboard MCU before wiring it**, the
   way the MLX90640 turned out to be a GY-MCU90640 (section 4). Look for RX/TX pins,
-  a quoted baud rate, or "smart"/"UART" in the product listing.
+  a quoted baud rate, or "smart"/"UART" in the product listing. (INMP441, the 3W/8Ω
+  speaker, and this PAM8302 have all been checked against their product pages —
+  none of them hide an MCU.)
+- When wiring B6, re-run each individual B2-B5 test sketch once everything shares
+  one breadboard and one common GND — a module that passed alone can fail once
+  everything is powered together if grounds aren't actually common.
 
-## 7. Looking further ahead
+## 9. Looking further ahead
 
-### Firmware (Part C)
+### Firmware (Part C) — bigger than "fill in two files" now
 
-The repo already has `novis_node.ino`, `protocol.h`, `sensors.h`, `crypto.h`.
-Two files are ours:
+The repo's `novis_node.ino` and `protocol.h` were written against **Bluefruit**,
+which is nRF52-specific — it does not exist for the ESP32. **Part C is no longer
+"two files are ours"; the BLE/main-loop side needs a real rewrite for the ESP32's
+own BLE stack** (`BLEDevice.h`, built into the `esp32` board package, or
+`NimBLE-Arduino` for a smaller footprint). This has **not been started or tested**
+— do not assume it's a quick swap; the wire protocol in `host/protocol.py` must
+still be matched exactly by whatever ESP32 BLE code replaces `novis_node.ino`.
 
-- **`sensors.cpp`** — real drivers for all five sensors. The guide has a full
-  reference implementation. Its eight `#define` pin numbers are examples and
-  **must** be replaced with our real wiring — the guide calls this the number one
-  cause of "it compiled but nothing works". Also note the guide's version calls
-  `Wire.begin()` with no arguments; on our ProMicro clone that targets the wrong
-  pins, so it needs `Wire.setPins(...)` first. **Carry over the section 4 fixes
-  too, or B2 breaks again silently inside the real firmware:** `PS` tied to GND,
-  `Wire.setClock(400000)`, and check whether the INMP441 or any other module in
-  the final assembly turns out to have its own onboard MCU the same way this one did.
-- **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library. Nonce = 8-byte
-  counter + 4-byte session salt.
+What's still expected to carry over largely unchanged:
+
+- **`sensors.cpp`** — real drivers for all five sensors, following section 6-8's
+  code above (ESP32 pins: I2C on 21/22, HC-SR04 on 16/17/18/19, I2S mic on
+  14/15/32, chirp on 4). **Carry over every section 4 MLX90640 fix or B2 breaks
+  again silently inside the real firmware:** `PS` tied to GND, `Wire.setClock(400000)`,
+  4.7k pull-ups on the final PCB/board too.
+- **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library (Rhys Weatherley).
+  This library is written to be portable across AVR/SAMD/ESP32/nRF52, so it should
+  compile for ESP32 unchanged, but **we have not actually compiled or run it on
+  the ESP32 ourselves yet** — verify before assuming it works.
 
 **For the paper:** the firmware uses an **all-zero placeholder key** so node and
 host talk on the bench. Fine for our experiments, and the paper already says so.
@@ -610,8 +931,13 @@ Do not describe it as secure.
 Write down what you actually measure, never what you expected:
 
 - the filled-in B6 pin table
-- current for all five cases in F1 (replaces the estimated 36.5 mA)
-- real battery life (predicted 3.3 h — report the truth, even if it is 2 h)
+- current for all five cases in F1 — **the guide's 36.5 mA estimate is for the
+  nRF52840 and no longer applies at all now that the node is an ESP32** (WiFi+BLE
+  combo chip, meaningfully higher draw — see section 3b). Needs fresh estimates
+  before it's even worth measuring against, not just fresh measurements.
+- real battery life on the ESP32 (the guide's predicted 3.3 h assumed the
+  nRF52840 and is not a useful reference point anymore — report the truth,
+  whatever it turns out to be)
 - the F2 range table (1–10 m)
 - HC-SR04 at 3.3 V: worked, or needed RCWL-1601 / boost converter?
 - that the MLX90640 module needs external 4.7k pull-ups, its `PS` pin tied to GND,
