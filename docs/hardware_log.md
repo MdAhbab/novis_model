@@ -7,11 +7,13 @@ got, what is broken, and what has already been tried so nobody repeats it.
 
 > **Board decision (1 Sept 2026): the node MCU is now ESP32-WROOM-32, permanently —
 > not just for debugging.** It was already doing double duty as our debug board for
-> B2 (section 3b as it used to be), and after the nRF52840 ProMicro clone's fiddly
-> UF2 bootloader and unreliable serial cost more time than the sensors themselves,
-> the team switched for good. `docs/NOVIS_Build_Guide.md` has been updated to match.
-> Section 3 below keeps the nRF52840 notes — they're hard-won and still useful if
-> anyone ever needs that board again — but relabelled as historical, not current.
+> B2, and after the nRF52840 ProMicro clone's fiddly UF2 bootloader and unreliable
+> serial cost more time than the sensors themselves, the team switched for good.
+> `docs/NOVIS_Build_Guide.md` has been updated to match. This log has also been
+> trimmed of nRF52840-specific debugging detail (section 3a keeps only what the
+> paper's methodology section needs) — the full history is in this branch's git
+> log if it's ever needed again. Runnable copies of every current test sketch now
+> live under `firmware/bench_tests/`, alongside the code shown inline here.
 
 ---
 
@@ -56,7 +58,7 @@ five wired at once it would have been hopeless.
 | B4 | INMP441 mic | **wired, testing** — signal present, pass not yet confirmed, see section 7 |
 | B5 | PAM8302 + speaker | **wired, no sound yet** — actively debugging, see section 8 |
 | B6 | Full assembly | not started |
-| C | `sensors.cpp`, `crypto.cpp` | not started — needs an ESP32 BLE rewrite, see section 9 |
+| C | `sensors.cpp`, `crypto.cpp`, BLE | drivers + crypto **compile-verified** on ESP32; **BLE not started**, see section 9 |
 | D | Host BLE receive | not started |
 | E | 12-scene capture | **start ethics paperwork now** — takes weeks |
 | F | Power/range/latency | not started |
@@ -99,66 +101,27 @@ serial port and real EN/BOOT buttons made every single test in this log faster
 to run. **As of 1 Sept 2026 the ESP32 is the permanent node MCU** — section 3a
 below is kept as a historical/reference record, not as the current board.
 
-### 3a. nRF52840 ProMicro — abandoned, kept for reference
+### 3a. nRF52840 ProMicro — abandoned (kept brief; not needed beyond the paper's methodology note)
 
-A Nice!Nano-compatible clone, silkscreen `V1940`. **It has no `SDA`/`SCL` labels** —
-pads are marked with raw port numbers (`O31`, `O29`, `1.15`, …). Two consequences:
+A Nice!Nano-compatible clone. Three concrete things cost real time and justify
+the switch, worth a sentence each in the paper's hardware section:
 
-**Select board "Nordic nRF52840 DK"** (`adafruit:nrf52:pca10056`), *not* Feather
-nRF52840 Express. Reason: we opened the installed core's
-`variants/pca10056/variant.cpp` and its pin map is the identity map — so Arduino
-pin number equals the P0.xx number printed on the board (P1.xx = +32). With the
-Feather variant the numbers do not line up and you drive the wrong pins.
+- **Bootloader friction.** It uses a UF2 bootloader with no reset button —
+  entering it required shorting an `RST` pad to `GND` twice quickly, and
+  automatic touch-reset from the Arduino IDE failed more often than it worked.
+- **Unreliable serial.** Reading output over USB was inconsistent enough that
+  progress had to be tracked via LED blink patterns instead of trusting the
+  Serial Monitor.
+- **Undocumented toolchain quirks.** At least one build failure
+  (`undefined reference to 'Serial'`) turned out to be a linking gotcha
+  specific to this core, not a wiring or logic bug — the kind of thing that
+  costs an afternoon on an already time-constrained build.
 
-| MLX90640 | Board pad | Arduino pin |
-|---|---|---|
-| SDA | `O31` | 31 |
-| SCL | `O29` | 29 |
-| VIN | `VCC` | — |
-| GND | `GND` | — |
-
-I2C pins must be set in code — the variant defaults (26/27) are wrong here:
-
-```cpp
-Wire.setPins(31, 29);   // SDA = P0.31, SCL = P0.29
-Wire.begin();
-```
-
-**Warning — `VCC` measures 3.7 V** on USB power. The MLX90640's absolute maximum is
-3.6 V. Do not power the sensor from this pin. (The `VDD` pad on the small 4-pin
-debug header reads ~0.05 V — it is not a rail, ignore it.)
-
-**Uploading is fiddly.** It uses a UF2 bootloader. App mode = one COM port (COM7
-here); bootloader mode = a different one (COM6) plus a USB drive named `NICENANO`.
-Auto touch-reset often fails with `No data received on serial port` or
-`Timed out waiting for acknowledgement`. There is **no reset button** — to force
-bootloader mode, short the `RST` pad to `GND` **twice quickly** (under half a
-second apart) with a jumper wire, then press Upload immediately. Windows pops an
-AutoPlay "file transfer" prompt for the drive — ignore it, Upload does not need it.
-
-**LEDs:** blue is `LED_BUILTIN`, the one sketches control. Red is a hardware/charge
-indicator and means nothing about firmware. Red+blue alternating at power-on is the
-factory bootloader animation, not your sketch running.
-
-**Reading serial from this board is unreliable.** Scripted reads (PowerShell,
-`arduino-cli monitor`) returned nothing repeatedly even while the sketch was
-clearly running. Use the **Arduino IDE Serial Monitor**, and note the port changes
-between DFU and app mode, so re-select it after every upload. Because of this, we
-added **LED blink patterns as progress markers** in the test sketches — e.g. 6 fast
-blinks = `setup()` reached, 2 medium = `Wire.begin()` done, 3 slow = sensor found,
-fast strobe forever = sensor not found. When serial is dead, the LED still tells you
-exactly how far the code got. Worth keeping that trick for the rest of Part B.
-
-**A sketch with no libraries will not link — this looks like a Serial bug but isn't.**
-On this core, the global `Serial` object (USB CDC) is defined inside the bundled
-`Adafruit_TinyUSB` library, and Arduino only links a library if the sketch includes
-one of its headers. B2's sketch used `Serial` fine because `Adafruit_MLX90640.h`
-pulls TinyUSB in as a side effect. A plain sketch that only calls `Serial.begin()` /
-`pinMode()` / `pulseIn()` — exactly what B3, B4 and B5 need — has nothing to pull it
-in, and fails with `undefined reference to 'Serial'` /
-`Adafruit_USBD_CDC::begin(unsigned long)`. Fix: add
-`#include <Adafruit_TinyUSB.h>` at the top, even though nothing in the sketch
-appears to call it directly.
+None of this recurs on the ESP32, which is why it isn't documented further
+here. The full blow-by-blow (exact pin mapping, bootloader procedure, the
+`Adafruit_TinyUSB` linking fix) is preserved in this file's git history if it
+is ever needed again — see commits before 1 Sept 2026 on the `Hardware`
+branch.
 
 ### 3b. ESP32 DevKit — the node MCU (current)
 
@@ -297,7 +260,8 @@ there is a microcontroller in the way. The INMP441 (B4) and the final assembly
 ### 5a. I2C scanner — the go-to sanity check
 
 Run this whenever anything looks wrong. `0x33` and nothing else = bus healthy.
-Phantom extra addresses = floating bus or a stuck sensor.
+Phantom extra addresses = floating bus or a stuck sensor. Also saved at
+`firmware/bench_tests/i2c_scanner/i2c_scanner.ino`.
 
 ```cpp
 #include <Wire.h>
@@ -305,7 +269,7 @@ Phantom extra addresses = floating bus or a stuck sensor.
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Wire.begin(21, 22);        // ESP32. On nRF52: Wire.setPins(31, 29); Wire.begin();
+  Wire.begin(21, 22);
   Serial.println("I2C Scanner starting...");
 }
 
@@ -326,118 +290,10 @@ void loop() {
 }
 ```
 
-### 5b. Read-size probe — kept for reference, not what fixed B2
+### 5b. The B2 test — this is the actual passing configuration
 
-Written while we still thought the fault was electrical (see section 4 for what it
-actually was — a second I2C master on the bus, fixed by grounding `PS`). Never got
-a conclusive run before the real cause was found. Keeping it here because it is a
-genuinely useful pattern for a future "short reads work, long reads don't" bug —
-just don't expect it to explain *this* one.
-
-```cpp
-#include <Wire.h>
-
-#define MLX_ADDR  0x33
-#define SDA_PIN   21
-#define SCL_PIN   22
-
-// Clock out 9 bits with SDA released, in case the sensor is still holding the
-// bus low from a transfer that was aborted mid-read.
-void busRecover() {
-  pinMode(SDA_PIN, INPUT_PULLUP);
-  pinMode(SCL_PIN, OUTPUT);
-  for (int i = 0; i < 9; i++) {
-    digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
-    digitalWrite(SCL_PIN, LOW);  delayMicroseconds(5);
-  }
-  digitalWrite(SCL_PIN, HIGH);
-  pinMode(SCL_PIN, INPUT_PULLUP);
-  delay(10);
-}
-
-// Read `len` bytes starting at EEPROM word address `addr`.
-// Returns how many bytes actually came back.
-size_t tryRead(uint16_t addr, size_t len, byte *endTxErr) {
-  Wire.beginTransmission(MLX_ADDR);
-  Wire.write(addr >> 8);
-  Wire.write(addr & 0xFF);
-  *endTxErr = Wire.endTransmission(false);   // repeated start
-  if (*endTxErr != 0) return 0;
-
-  size_t recv = Wire.requestFrom((uint8_t)MLX_ADDR, len, true);
-  while (Wire.available()) Wire.read();       // drain
-  return recv;
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(2000);
-  Serial.println();
-  Serial.println("=== MLX90640 read-size probe ===");
-
-  busRecover();
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setBufferSize(256);
-  Wire.setTimeOut(1000);
-  Wire.setClock(100000);
-  delay(300);
-
-  const size_t sizes[] = {2, 4, 8, 16, 32, 64, 128, 250};
-  for (unsigned s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
-    size_t want = sizes[s];
-    int ok = 0;
-    byte lastErr = 0;
-    for (int t = 0; t < 5; t++) {        // 5 tries, so one glitch isn't a "limit"
-      byte err;
-      if (tryRead(0x2400, want, &err) == want) ok++;
-      else lastErr = err;
-      delay(30);
-    }
-    Serial.print("read "); Serial.print(want);
-    Serial.print(" bytes: "); Serial.print(ok); Serial.print("/5 ok");
-    if (ok < 5) { Serial.print("   (last endTransmission err="); Serial.print(lastErr); Serial.print(")"); }
-    Serial.println();
-  }
-
-  Serial.println();
-  const size_t chunkSizes[] = {32, 64, 128};
-  for (unsigned c = 0; c < sizeof(chunkSizes) / sizeof(chunkSizes[0]); c++) {
-    size_t chunk = chunkSizes[c];
-    uint16_t addr = 0x2400;
-    size_t done = 0;
-    bool failed = false;
-    int failChunk = -1;
-    for (int i = 0; done < 1664; i++) {
-      size_t want = (1664 - done) > chunk ? chunk : (1664 - done);
-      byte err;
-      if (tryRead(addr, want, &err) != want) { failed = true; failChunk = i; break; }
-      done += want;
-      addr += want / 2;   // address is in 16-bit words
-    }
-    Serial.print("full 1664-byte EEPROM in "); Serial.print(chunk);
-    Serial.print("-byte chunks: ");
-    if (failed) {
-      Serial.print("FAILED at chunk "); Serial.print(failChunk);
-      Serial.print(" ("); Serial.print(done); Serial.println(" bytes read)");
-    } else {
-      Serial.println("OK - all 1664 bytes read");
-    }
-    delay(200);
-  }
-
-  Serial.println();
-  Serial.println("=== done ===");
-}
-
-void loop() {}
-```
-
-### 5c. The B2 test — this is the actual passing configuration
-
-ESP32 version, PASSED at 8 Hz / 400 kHz (section 4). On nRF52, replace
-`Wire.begin(21, 22);` with `Wire.setPins(31, 29); Wire.begin();` — the clock and
-refresh rate lines stay the same.
+PASSED at 8 Hz / 400 kHz (section 4). Also saved as a runnable sketch at
+`firmware/bench_tests/B2_thermal/B2_thermal.ino`.
 
 ```cpp
 #include <Wire.h>
@@ -491,19 +347,13 @@ void loop() {
 33-37 C, sustained at 8 Hz. `MLX90640 found!` on its own is not a pass — `getFrame()`
 has to succeed too, and for a while it didn't (error -8, see section 4).
 
-### 5d. Command line build/upload
+### 5c. Command line build/upload
 
 Faster than the IDE and prints real errors.
 
 ```bash
-# ESP32 (current board — hold BOOT during upload if it doesn't auto-reset)
 arduino-cli compile --fqbn esp32:esp32:esp32 <sketch-dir>
-arduino-cli upload -p COM8 --fqbn esp32:esp32:esp32 <sketch-dir>
-
-# nRF52840 (abandoned, kept for reference — double-tap RST-to-GND first if upload times out)
-arduino-cli compile --fqbn adafruit:nrf52:pca10056 <sketch-dir>
-arduino-cli upload -p COM7 --fqbn adafruit:nrf52:pca10056 <sketch-dir>
-
+arduino-cli upload -p COM8 --fqbn esp32:esp32:esp32 <sketch-dir>   # hold BOOT if it doesn't auto-reset
 arduino-cli board list      # which port is which
 ```
 
@@ -542,6 +392,8 @@ Pins chosen to avoid the MLX90640's I2C on GPIO21/22:
 | RIGHT ECHO | **GPIO19** | **through the divider** |
 
 ### Test code (compiles clean, running on real hardware)
+
+Also saved at `firmware/bench_tests/B3_sonar/B3_sonar.ino`.
 
 ```cpp
 #define TRIG_LEFT   16
@@ -632,6 +484,8 @@ compatible module — trusted as authoritative for this specific part:
 | **L/R** | **GND** — required, or the mic outputs nothing |
 
 ### Test code (ESP32 I2S driver, compiles and runs)
+
+Also saved at `firmware/bench_tests/B4_microphone/B4_microphone.ino`.
 
 ```cpp
 #include <driver/i2s.h>
@@ -744,6 +598,8 @@ minimum verify continuity with a multimeter, before ruling out the amp itself.
 
 ### Test code — chirp only
 
+Also saved at `firmware/bench_tests/B5_speaker_chirp/B5_speaker_chirp.ino`.
+
 ```cpp
 #define SPEAKER_PIN 4
 
@@ -779,7 +635,8 @@ Human hearing is a bad instrument for confirming a 5-50 ms chirp exists — this
 exactly the guide's next step (B5 "test the microphone and speaker together")
 brought forward because "I can't hear it" was too ambiguous to debug against.
 This combines the B4 and B5 code so the mic reports a number instead of asking a
-human ear to make the call:
+human ear to make the call. Also saved at
+`firmware/bench_tests/B5_mic_speaker_echo_test/B5_mic_speaker_echo_test.ino`.
 
 ```cpp
 #include <driver/i2s.h>
@@ -900,27 +757,31 @@ combined mic+speaker test above or a straight continuity check on OUT+/OUT-.
 
 ## 9. Looking further ahead
 
-### Firmware (Part C) — bigger than "fill in two files" now
+### Firmware (Part C) — the BLE side is the real remaining work
 
 The repo's `novis_node.ino` and `protocol.h` were written against **Bluefruit**,
-which is nRF52-specific — it does not exist for the ESP32. **Part C is no longer
-"two files are ours"; the BLE/main-loop side needs a real rewrite for the ESP32's
-own BLE stack** (`BLEDevice.h`, built into the `esp32` board package, or
-`NimBLE-Arduino` for a smaller footprint). This has **not been started or tested**
-— do not assume it's a quick swap; the wire protocol in `host/protocol.py` must
-still be matched exactly by whatever ESP32 BLE code replaces `novis_node.ino`.
+which is nRF52-specific — it does not exist for the ESP32. **The BLE/main-loop
+side needs a real rewrite for the ESP32's own BLE stack** (`BLEDevice.h`, built
+into the `esp32` board package, or `NimBLE-Arduino` for a smaller footprint).
+This has **not been started or tested** — do not assume it's a quick swap; the
+wire protocol in `host/protocol.py` must still be matched exactly by whatever
+ESP32 BLE code replaces `novis_node.ino`.
 
-What's still expected to carry over largely unchanged:
+The two files that were "ours to write" are further along than that:
 
-- **`sensors.cpp`** — real drivers for all five sensors, following section 6-8's
-  code above (ESP32 pins: I2C on 21/22, HC-SR04 on 16/17/18/19, I2S mic on
-  14/15/32, chirp on 4). **Carry over every section 4 MLX90640 fix or B2 breaks
-  again silently inside the real firmware:** `PS` tied to GND, `Wire.setClock(400000)`,
-  4.7k pull-ups on the final PCB/board too.
-- **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library (Rhys Weatherley).
-  This library is written to be portable across AVR/SAMD/ESP32/nRF52, so it should
-  compile for ESP32 unchanged, but **we have not actually compiled or run it on
-  the ESP32 ourselves yet** — verify before assuming it works.
+- **`sensors.cpp`** — a combined draft of all four sensor drivers (thermal,
+  sonar x2, mic/I2S, chirp), using the real B6 pin plan and every section 4
+  MLX90640 fix (`Wire.setClock(400000)`, matching what wiring `PS` to GND
+  requires), **compiles clean for ESP32** as a single unit — no symbol or
+  resource conflicts between the four drivers. Saved at
+  `firmware/bench_tests/sensors_combined_compile_check/`. Still not run as a
+  combined unit on real hardware, and not yet moved into
+  `firmware/novis_node/sensors.cpp` itself — B3-B5 should pass individually
+  first, so a bug doesn't hide inside the merge.
+- **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library (Rhys
+  Weatherley). **Compiles and runs on ESP32, confirmed** (it seals a test
+  frame and prints the output length on boot). Saved at
+  `firmware/bench_tests/crypto_compile_check/`.
 
 **For the paper:** the firmware uses an **all-zero placeholder key** so node and
 host talk on the bench. Fine for our experiments, and the paper already says so.

@@ -364,7 +364,8 @@ symptom.
 
 #### Test code
 
-Create a new sketch (**File → New**), paste this in, and upload:
+Create a new sketch (**File → New**), paste this in, and upload. Also saved
+as a runnable file at `firmware/bench_tests/B2_thermal/B2_thermal.ino`.
 
 ```cpp
 #include <Wire.h>
@@ -516,6 +517,8 @@ Do the **left** sensor first. Test it. Then add the **right** one.
 
 #### Test code
 
+Also saved at `firmware/bench_tests/B3_sonar/B3_sonar.ino`.
+
 ```cpp
 #define TRIG_LEFT   16
 #define ECHO_LEFT   17
@@ -609,6 +612,8 @@ avoids every pin already used by I2C (21/22) or the ultrasonic sensors
 > re-checking.
 
 #### Test code
+
+Also saved at `firmware/bench_tests/B4_microphone/B4_microphone.ino`.
 
 ⚠️ **Update, 1 Sept 2026:** this has now been wired and run on real hardware.
 Peak levels of roughly 70,000–660,000 were observed, which rules out the two
@@ -736,6 +741,8 @@ signal loud enough to be useful.
 
 #### Test code
 
+Also saved at `firmware/bench_tests/B5_speaker_chirp/B5_speaker_chirp.ino`.
+
 ```cpp
 #define SPEAKER_PIN 4
 
@@ -776,7 +783,8 @@ This is the real echo test — and it also gives you an objective way to
 confirm the chirp exists at all, which matters because a 5 ms tone is easy
 to miss by ear and hard to debug from "I can't hear it" alone. Combine the
 B4 and B5 code so the microphone reports a number instead of asking a human
-ear to make the call:
+ear to make the call. Also saved at
+`firmware/bench_tests/B5_mic_speaker_echo_test/B5_mic_speaker_echo_test.ino`:
 
 ```cpp
 #include <driver/i2s.h>
@@ -964,7 +972,8 @@ rest of the firmware expects, targeting the ESP32's I2C and I2S peripherals
 instead of the nRF52's. **This combined file has been compile-tested as a
 whole** (not just each piece separately) against the ESP32 toolchain —
 thermal, both sonars, mic, and chirp together, no conflicts. It has not yet
-been run on the fully assembled hardware (B6).
+been run on the fully assembled hardware (B6). Also saved as a standalone
+sketch at `firmware/bench_tests/sensors_combined_compile_check/`.
 
 ```cpp
 // NOVIS sensor drivers — real implementations (ESP32).
@@ -1141,7 +1150,8 @@ bool sensors_read_sonar(uint16_t *left, uint16_t *right, uint8_t *status) {
 Create a **new file** in the same folder called `crypto.cpp` and paste this.
 Unlike `sensors.cpp`, **nothing in this file is MCU-specific** — the `Crypto`
 library is portable, and this exact code has been compile-tested unchanged
-on the ESP32 toolchain:
+on the ESP32 toolchain (also saved at
+`firmware/bench_tests/crypto_compile_check/`):
 
 ```cpp
 // NOVIS AEAD implementation using ChaCha20-Poly1305.
