@@ -9,8 +9,8 @@
 
   Status: compiles clean for esp32:esp32:esp32 (verified). NOT yet run
   against real hardware as a combined unit, and NOT yet the actual
-  firmware/novis_node/sensors.cpp - each driver here matches what passed (B2)
-  or is still being tested (B3, B4) individually elsewhere in bench_tests/.
+  firmware/novis_node/sensors.cpp - though each driver here matches one that
+  has now passed individually (B2-B5) elsewhere in bench_tests/.
   Carries over every B2 fix: PS tied to GND (wiring only, not code-visible
   here), Wire.setClock(400000).
 

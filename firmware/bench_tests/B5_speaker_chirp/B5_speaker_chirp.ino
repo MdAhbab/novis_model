@@ -1,8 +1,8 @@
 /*
   NOVIS Part B5 - PAM8302 + speaker, chirp-only test (ESP32)
-  Status as of last session: wired, no confirmed sound yet - see
-  docs/hardware_log.md section 8 for two real findings before assuming this
-  code is at fault:
+  Status: PASS on hardware. If a rebuilt module goes silent again, see
+  docs/hardware_log.md section 8 for the two findings that caused it before,
+  and check them before assuming this code is at fault:
     1. This PAM8302A board's SD (shutdown) pin must be tied to VIN or the
        amp stays muted no matter what signal reaches A+.
     2. A speaker wire looped-through-the-hole but not soldered onto

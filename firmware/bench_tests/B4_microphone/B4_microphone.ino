@@ -16,8 +16,10 @@
   ESP32 GPIO32 -> INMP441 SD  (data out)
   ESP32 GND    -> INMP441 L/R  <-- required, or the mic outputs nothing
 
+  Status: PASS on hardware.
+
   PASS = "Peak level" small and steady in a quiet room, spikes clearly above
-  baseline on a clap - not yet confirmed with that specific comparison.
+  baseline on a clap.
 */
 
 #include <driver/i2s.h>

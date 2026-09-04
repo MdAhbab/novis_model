@@ -615,12 +615,10 @@ avoids every pin already used by I2C (21/22) or the ultrasonic sensors
 
 Also saved at `firmware/bench_tests/B4_microphone/B4_microphone.ino`.
 
-⚠️ **Update, 1 Sept 2026:** this has now been wired and run on real hardware.
-Peak levels of roughly 70,000–660,000 were observed, which rules out the two
-specific failure patterns below (stuck at 0, stuck at one huge constant value)
-— but a proper quiet-room-vs-clap comparison, which is what actually proves a
-pass, has not been done yet. Treat this as "signal present, not yet confirmed
-passing" rather than either a pass or a fail.
+✅ **Update, 5 Sept 2026: PASS.** Wired and run on real hardware — quiet-room
+peaks stay low and a clap spikes them clearly above baseline. Peak levels of
+roughly 70,000–660,000 were seen in ordinary room conditions, well inside the
+24-bit sample range and neither of the two failure patterns described below.
 
 ```cpp
 #include <driver/i2s.h>

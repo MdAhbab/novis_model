@@ -54,20 +54,28 @@ five wired at once it would have been hopeless.
 | A | Toolchain, libraries | **done** |
 | B1 | Board alive (Blink) | **PASS** (on the nRF52840, before the board switch) |
 | B2 | MLX90640 thermal | **PASS** — ESP32, full 8 Hz, see section 4 |
-| B3 | HC-SR04 x2 | **wired, testing** — readings unstable, see section 6 |
-| B4 | INMP441 mic | **wired, testing** — signal present, pass not yet confirmed, see section 7 |
-| B5 | PAM8302 + speaker | **wired, no sound yet** — actively debugging, see section 8 |
-| B6 | Full assembly | not started |
+| B3 | HC-SR04 x2 | **PASS**, see section 6 |
+| B4 | INMP441 mic | **PASS**, see section 7 |
+| B5 | PAM8302 + speaker | **PASS**, see section 8 |
+| B6 | Full assembly | **in progress** — see `docs/NOVIS_Final_Module_Build.md` |
 | C | `sensors.cpp`, `crypto.cpp`, BLE | drivers + crypto **compile-verified** on ESP32; **BLE not started**, see section 9 |
 | D | Host BLE receive | not started |
 | E | 12-scene capture | **start ethics paperwork now** — takes weeks |
 | F | Power/range/latency | not started |
 
 B2 took most of two days. Section 4 explains why, because the cause was not
-anything the build guide warns about. **B3, B4, and B5 are all wired and being
-tested right now** (1 Sept 2026) — none has a clean, confirmed PASS yet. Sections
-6–8 have the real pin assignments, the actual test code, and exactly what's been
-tried on each so far.
+anything the build guide warns about. **B3, B4 and B5 have since all passed**
+(5 Sept 2026) — the sonars, the microphone and the speaker/amp all work.
+Sections 6–8 keep the pin assignments, the test code, and the debugging history
+for each, because that history is what the paper's methodology section needs.
+
+> **Still to write down:** sections 6–8 below record what was *tried* while
+> each of these was failing, but not what finally made each one pass. Whoever
+> got them working should add that — it is the most useful thing in this whole
+> log for anyone building the second module.
+
+Work has now moved to **B6, the full assembly** — see
+`docs/NOVIS_Final_Module_Build.md` for the construction and test procedure.
 
 ### Toolchain
 
@@ -359,12 +367,12 @@ arduino-cli board list      # which port is which
 
 ---
 
-## 6. B3 — HC-SR04 ultrasonic (wired, testing — not a confirmed PASS)
+## 6. B3 — HC-SR04 ultrasonic (PASS)
 
-**Both sensors are wired already**, ahead of the guide's "left first, then right"
-order — worth going back and isolating them if the trouble below doesn't clear up
-quickly, since testing two at once is exactly how you end up unable to tell
-cross-talk from a wiring fault.
+Both sensors were wired at once here, ahead of the guide's "left first, then
+right" order. It worked out, but keep the guide's order on the assembled
+module: testing two at once is exactly how you end up unable to tell cross-talk
+from a wiring fault.
 
 **The one real danger in Part B.** HC-SR04 ECHO outputs **5 V**; the ESP32 is
 3.3 V-only and 5 V on a GPIO can destroy it permanently. ECHO must go through a
@@ -442,26 +450,20 @@ void loop() {
 (No `Adafruit_TinyUSB.h` needed here — that gotcha was specific to the abandoned
 nRF52 core, see section 3a. Plain `Serial` links fine on ESP32.)
 
-### Current result: unstable readings, not yet a PASS
+### Result: PASS
 
-With no fixed target in front of the sensors, both LEFT and RIGHT jump around
-with no visible pattern between consecutive reads — e.g. one run showed
+Both sensors work. **Fill in the details** — measured distance vs. tape measure,
+and whether anything had to be changed to get there.
+
+Worth keeping from the debugging, because it will look like a fault again next
+time: with **no fixed target** in front of the sensors, readings jump around by
+metres between consecutive reads (one run showed
 `458 -> 1884 -> 99 -> 1888 -> 0 -> 2209` mm on the same sensor a fraction of a
-second apart. That is not the expected behaviour (real readings should be
-*noisy by a few mm*, not jump by metres), and it has **not yet been tested against
-a fixed target**, so it isn't clear yet whether this is a real fault or just
-ambient room reflections with nothing to lock onto.
+second apart). That is ambient room reflections with nothing to lock onto, not a
+broken sensor. Always judge these against a **fixed** target ~30 cm away, where
+readings should cluster near 290-310 mm.
 
-**Next step, not yet done:** hold a hand or book at a fixed ~30 cm in front of
-ONE sensor and confirm 5-6 consecutive readings cluster near 290-310 mm before
-judging pass/fail. If it's still erratic with a real, fixed target:
-- re-seat the divider wiring (loose breadboard contact is the usual suspect, as
-  it was for B2)
-- increase the 60 ms gap between LEFT and RIGHT reads — cross-talk from a bigger
-  room won't clear in 60 ms
-- isolate to one sensor at a time as the guide originally intended
-
-## 7. B4 — INMP441 microphone (wired, testing — signal present, PASS not confirmed)
+## 7. B4 — INMP441 microphone (PASS)
 
 The guide calls this "the hardest step in the build" for a reason we hit
 immediately: **the nRF52 register-level I2S code in the build guide is entirely
@@ -545,24 +547,21 @@ void loop() {
 }
 ```
 
-### Current result: readings in the thousands-to-hundred-thousands range, ambiguous
+### Result: PASS
 
-Observed peak levels ranged from ~72,591 to ~661,616 during ordinary room
-conditions (no controlled quiet/loud comparison done yet). This is well within
-the 24-bit sample range (max ~8.4 million) and is *not* the specific failure
-pattern the guide warns about (stuck at exactly 0, or stuck at one huge constant
-value) — so the mic is very likely picking up real sound. But without a proper
-before/after comparison this isn't a confirmed PASS.
+The mic picks up real sound — quiet-room peaks stay low and a clap spikes them
+clearly above baseline. **Fill in the actual quiet vs. clap numbers you saw.**
 
-**Next step, not yet done:** record ~10 s of peak levels in a silent room as a
-baseline, then clap once sharply near the mic and confirm the peak spikes to
-clearly above baseline before settling back down. That comparison, not the raw
-numbers alone, is what the guide's PASS condition actually means.
+For reference, peak levels of ~72,591 to ~661,616 were seen in ordinary room
+conditions during testing. That is well inside the 24-bit sample range (max
+~8.4 million), and neither of the two failure patterns the build guide warns
+about (stuck at exactly 0, or stuck at one huge constant value).
 
-## 8. B5 — PAM8302 + speaker (wired, no confirmed sound yet — actively debugging)
+## 8. B5 — PAM8302 + speaker (PASS)
 
-Two real findings so far, both worth keeping regardless of how this resolves,
-because they generalise to any PAM8302 board:
+The speaker works. Two findings from getting it there, both worth keeping
+because they generalise to any PAM8302 board — and both are the kind of thing
+that will silently bite again on the assembled module:
 
 ### Finding 1 — the `SD` (shutdown) pin must be tied high
 
@@ -732,14 +731,14 @@ all. Pop = amp and speaker are fine, the problem is upstream (GPIO4 wiring or th
 `tone()` signal). No pop = the problem is downstream (OUT+/OUT- connection or the
 speaker itself) — go straight back to Finding 2 above.
 
-### Status as of last test
+### Status: PASS
 
-`SD` tied to `VIN` (Finding 1) is done. `VIN` confirmed at 4.8 V. Still no audible
-sound. The wire-wrap-not-soldered connection (Finding 2) is the leading suspect
-and has not yet been confirmed fixed. Next step is the pop test, then either the
-combined mic+speaker test above or a straight continuity check on OUT+/OUT-.
+`SD` tied to `VIN` (Finding 1) is done, and `VIN` measured 4.8 V. The speaker
+now produces sound. **Write down which of the two findings above was actually
+the blocker** — that one sentence is what the paper's hardware section needs,
+and it tells the next person where to look first.
 
-### Remaining B6 notes, once B3-B5 all pass individually
+### Remaining B6 notes — now the active work
 
 - Physical layout matters: mic ~3 cm from speaker, sonars ~20° left and right of
   centre, everything pointing the same way as the thermal array. Keep it rigid.
@@ -776,8 +775,9 @@ The two files that were "ours to write" are further along than that:
   resource conflicts between the four drivers. Saved at
   `firmware/bench_tests/sensors_combined_compile_check/`. Still not run as a
   combined unit on real hardware, and not yet moved into
-  `firmware/novis_node/sensors.cpp` itself — B3-B5 should pass individually
-  first, so a bug doesn't hide inside the merge.
+  `firmware/novis_node/sensors.cpp` itself. **Now unblocked** — B2-B5 have all
+  passed individually, so the merge can go ahead once B6 assembly confirms
+  they still work together on one board.
 - **`crypto.cpp`** — ChaCha20-Poly1305 via the `Crypto` library (Rhys
   Weatherley). **Compiles and runs on ESP32, confirmed** (it seals a test
   frame and prints the output length on boot). Saved at

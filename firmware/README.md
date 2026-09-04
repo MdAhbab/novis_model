@@ -30,8 +30,8 @@ Libraries used by the drivers in `bench_tests/` (install via Library Manager):
 | Need | Library | Status on ESP32 |
 |---|---|---|
 | MLX90640 thermal (I2C) | `Adafruit MLX90640` | compile + hardware verified, see `bench_tests/B2_thermal` |
-| HC-SR04 ultrasonic | manual trigger/echo timing (no library) | wired, testing — see `bench_tests/B3_sonar` |
-| INMP441 microphone | ESP32's own `driver/i2s.h` (not the nRF52 I2S registers) | wired, testing — see `bench_tests/B4_microphone` |
+| HC-SR04 ultrasonic | manual trigger/echo timing (no library) | hardware verified, see `bench_tests/B3_sonar` |
+| INMP441 microphone | ESP32's own `driver/i2s.h` (not the nRF52 I2S registers) | hardware verified, see `bench_tests/B4_microphone` |
 | ChaCha20-Poly1305 | `rweather/Crypto` (ChaChaPoly) | compiles and runs, see `bench_tests/crypto_compile_check` |
 
 ## Wiring (summary — see docs/hardware_log.md section 6-8 for the full story)
@@ -49,19 +49,19 @@ Libraries used by the drivers in `bench_tests/` (install via Library Manager):
 Each subfolder is a standalone, individually-flashable sketch that tests one
 piece before it's combined — same "one component, test, then the next" rule
 the build guide uses throughout Part B. **Compile-verified for
-`esp32:esp32:esp32`**; hardware status varies per sketch (noted in each
-file's header comment) — check `docs/hardware_log.md` for the current word on
-each before trusting a green compile as a pass.
+`esp32:esp32:esp32`**, and the B2-B5 sensor tests have all passed on real
+hardware. See `docs/hardware_log.md` for the debugging history behind each.
 
 | Folder | What it tests | Hardware status |
 |---|---|---|
 | `i2c_scanner/` | any I2C bus — the first thing to run when something's wrong | utility, not a pass/fail test |
 | `B2_thermal/` | MLX90640 thermal sensor | **PASS** |
-| `B3_sonar/` | HC-SR04 x2 ultrasonic | wired, testing |
-| `B4_microphone/` | INMP441 mic | wired, testing |
-| `B5_speaker_chirp/` | PAM8302 + speaker, chirp only | wired, debugging |
-| `B5_mic_speaker_echo_test/` | speaker + mic together (the real echo test) | wired, debugging |
+| `B3_sonar/` | HC-SR04 x2 ultrasonic | **PASS** |
+| `B4_microphone/` | INMP441 mic | **PASS** |
+| `B5_speaker_chirp/` | PAM8302 + speaker, chirp only | **PASS** |
+| `B5_mic_speaker_echo_test/` | speaker + mic together (the real echo test) | **PASS** |
 | `sensors_combined_compile_check/` | all four drivers together, real B6 pins, in the shape `sensors.cpp` needs | compiles clean; not run as a combined unit on hardware yet |
+| `B6_full_module_test/` | all four sensors together, on the real assembled module — see `docs/NOVIS_Final_Module_Build.md` | compiles clean; run this once the physical module is built |
 | `crypto_compile_check/` | ChaCha20-Poly1305 via the `Crypto` library | compiles and runs |
 
 ## Build and flash
@@ -83,8 +83,8 @@ patterns — the BLE side has not been ported yet, see Status below.
 ## Status / before real use
 
 1. Fold the driver bodies from `bench_tests/sensors_combined_compile_check/`
-   into `sensors.cpp` once B3-B5 each individually pass on hardware — don't
-   copy it in early, since B3-B5 aren't confirmed passing yet.
+   into `sensors.cpp`. B2-B5 have all passed individually on hardware, so this
+   is now unblocked.
 2. Fold `bench_tests/crypto_compile_check/` into `crypto.cpp`.
 3. **Port `novis_node.ino`'s BLE server from Bluefruit to an ESP32 BLE
    stack.** This is real, unstarted work, not a small tweak — Bluefruit does

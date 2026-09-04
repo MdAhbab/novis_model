@@ -17,9 +17,12 @@
   RIGHT TRIG -> GPIO18 (direct, no divider)   RIGHT ECHO -> divider -> GPIO19
   VCC on both -> 5V/VIN (USB power for the bench test)
 
+  Status: PASS on hardware.
+
   PASS = distance readings that track a hand moving toward/away from the
-  sensor, matching a ruler within a few mm at 30 cm - not yet confirmed with
-  a fixed target as of the last session.
+  sensor, matching a ruler within a few mm at 30 cm. Always judge against a
+  FIXED target - with nothing in front of the sensors, readings jump by
+  metres from ambient reflections, and that is normal, not a fault.
 */
 
 #define TRIG_LEFT   16
