@@ -16,11 +16,14 @@
 
   Never wire the speaker directly to an ESP32 pin - always through the amp.
 
-  PASS = a short, quiet "tick"/chirp every two seconds. If you can't hear it,
-  the delay(50) below already makes it much longer/louder than the real
-  5 ms design (delayMicroseconds(250)) for easier testing - change back to
-  delayMicroseconds(250) once sound is confirmed, or the paper's
-  chirp-duration number is wrong.
+  PASS = a short, quiet "tick"/chirp every two seconds. It is only 5 ms long,
+  so listen carefully in a quiet room.
+
+  The chirp below is the real 5 ms design value (20 steps x 250 us), which is
+  what the paper's chirp-duration number assumes. If you need an obviously
+  audible sweep while debugging silent hardware, temporarily swap
+  delayMicroseconds(250) for delay(50) - then put it back, or the paper's
+  number no longer matches the code.
 */
 
 #define SPEAKER_PIN 4
@@ -38,9 +41,9 @@ void emitChirp() {
     float t = (float)i / (float)(steps - 1);
     int freq = (int)(1000.0f * powf(8.0f, t));
     tone(SPEAKER_PIN, freq);
-    delay(50);   // TEMPORARY: long/loud for testing. The real design uses
-                 // delayMicroseconds(250) for a 5 ms chirp - change back once
-                 // sound is confirmed, or the paper's chirp-duration number is wrong.
+    delayMicroseconds(250);   // 20 steps x 250 us = the real 5 ms chirp.
+                              // Swap for delay(50) only as a temporary
+                              // debugging aid - see the header comment.
   }
   noTone(SPEAKER_PIN);
 }

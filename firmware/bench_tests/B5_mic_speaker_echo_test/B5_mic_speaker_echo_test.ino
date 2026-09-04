@@ -71,7 +71,10 @@ void emitChirp() {
     float t = (float)i / (float)(steps - 1);
     int freq = (int)(1000.0f * powf(8.0f, t));
     tone(SPEAKER_PIN, freq);
-    delay(50);
+    delayMicroseconds(250);   // 20 steps x 250 us = the real 5 ms chirp.
+                              // This test has to use the real duration - a
+                              // longer chirp would measure an echo NOVIS
+                              // never actually emits.
   }
   noTone(SPEAKER_PIN);
 }

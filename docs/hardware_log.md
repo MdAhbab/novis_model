@@ -1,6 +1,6 @@
 # NOVIS Hardware — Build Log & Handoff
 
-**Branch:** `Hardware` · **Covers:** Part B of `docs/NOVIS_Build_Guide.md` · **Updated:** 1 Sept 2026
+**Branch:** `Hardware` · **Covers:** Part B of `docs/NOVIS_Build_Guide.md` · **Updated:** 5 Sept 2026
 
 Read this before touching the hardware. It says what we are building, how far we
 got, what is broken, and what has already been tried so nobody repeats it.
@@ -615,9 +615,9 @@ void emitChirp() {
     float t = (float)i / (float)(steps - 1);
     int freq = (int)(1000.0f * powf(8.0f, t));
     tone(SPEAKER_PIN, freq);
-    delay(50);   // TEMPORARY: long/loud for testing. The real design uses
-                 // delayMicroseconds(250) for a 5 ms chirp — change back once
-                 // sound is confirmed, or the paper's chirp-duration number is wrong.
+    delayMicroseconds(250);   // 20 steps x 250 us = the real 5 ms chirp.
+                              // Swap for delay(50) only as a temporary
+                              // debugging aid, then put it back.
   }
   noTone(SPEAKER_PIN);
 }
@@ -690,7 +690,9 @@ void emitChirp() {
     float t = (float)i / (float)(steps - 1);
     int freq = (int)(1000.0f * powf(8.0f, t));
     tone(SPEAKER_PIN, freq);
-    delay(50);
+    delayMicroseconds(250);   // the real 5 ms chirp - this test has to use
+                              // the real duration, or it measures an echo
+                              // NOVIS never actually emits.
   }
   noTone(SPEAKER_PIN);
 }
