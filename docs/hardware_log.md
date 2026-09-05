@@ -57,7 +57,7 @@ five wired at once it would have been hopeless.
 | B3 | HC-SR04 x2 | **PASS**, see section 6 |
 | B4 | INMP441 mic | **PASS**, see section 7 |
 | B5 | PAM8302 + speaker | **PASS**, see section 8 |
-| B6 | Full assembly | **in progress** — see `docs/NOVIS_Final_Module_Build.md` |
+| B6 | Full assembly | **PASS** — USB and battery, see section 8 and `docs/NOVIS_Final_Module_Build.md` |
 | C | `sensors.cpp`, `crypto.cpp`, BLE | drivers + crypto **compile-verified** on ESP32; **BLE not started**, see section 9 |
 | D | Host BLE receive | not started |
 | E | 12-scene capture | **start ethics paperwork now** — takes weeks |
@@ -74,8 +74,12 @@ for each, because that history is what the paper's methodology section needs.
 > got them working should add that — it is the most useful thing in this whole
 > log for anyone building the second module.
 
-Work has now moved to **B6, the full assembly** — see
+**B6 has since passed too** (5 Sept 2026), on both USB and battery power — see
+section 8's "B6 full module test" for the two faults found and fixed
+(loose ground, and a WiFi/I2C startup-ordering bug), and
 `docs/NOVIS_Final_Module_Build.md` for the construction and test procedure.
+Work now moves to Part C — folding the bench-tested drivers into
+`novis_node/sensors.cpp` and porting the BLE side.
 
 ### Toolchain
 
@@ -755,6 +759,47 @@ and it tells the next person where to look first.
 - When wiring B6, re-run each individual B2-B5 test sketch once everything shares
   one breadboard and one common GND — a module that passed alone can fail once
   everything is powered together if grounds aren't actually common.
+
+### B6 full module test — PASS (USB and battery)
+
+Full assembled module (thermal + both sonars + mic/speaker echo) tested together
+via `firmware/dashboard/dashboard.ino` — see
+`docs/NOVIS_Final_Module_Build.md` section 6 for the build steps and pass
+criteria. That sketch also serves a live browser dashboard (ESP32 runs its own
+WiFi AP, `192.168.4.1`) with a real thermal heatmap, sonar/echo graphs on a
+distance axis, and a dataset capture/export tool — useful beyond bring-up, for
+collecting labelled samples for the paper's dataset.
+
+Two real findings from getting this far:
+
+**Fault — sonar reads 0/0 once combined, worked alone.** Exactly the ground
+warning above: a breadboard jumper to the shared GND rail had come loose when
+everything else was wired in. Fixed by re-seating the ground connections and
+re-testing continuity with a multimeter. If this recurs, check grounds before
+suspecting code.
+
+**Fault — MLX90640 intermittently "not found", even on clean USB power, only in
+the WiFi-dashboard sketch.** `Adafruit_MLX90640::begin()` does one large I2C
+burst read (the sensor's full calibration EEPROM) at startup. The dashboard's
+first version called `WiFi.softAP()` *before* `Wire.begin()`/`mlx.begin()`, so
+the radio was already transmitting beacons during that read — and it would
+fail intermittently, even though the identical wiring always passed on
+`B2_thermal` (which has no WiFi at all) and I2C-scanner always found the
+sensor's address. Fix: **initialise every sensor first, start WiFi last** in
+`setup()`. Once MLX90640 is initialised, its normal per-frame `getFrame()`
+reads coexist with WiFi fine — only that one heavy startup read needed the
+radio quiet. Worth remembering for `novis_node.ino`'s real BLE port too: do
+sensor `begin()` calls before turning the radio on, not after.
+
+**Battery power**: LM2596 buck-down module trimmed to 5 V feeds ESP32 VIN,
+both HC-SR04 VCC pins, and PAM8302 VIN; 3.3 V devices (MLX90640, INMP441) come
+from the ESP32's own onboard regulator. Measured 4.89 V at the LM2596 output
+under load (~2 minutes into a battery run) — comfortably above the ~4.5 V
+HC-SR04 reliability floor. `WiFi.setTxPower(WIFI_POWER_11dBm)` was added to
+shrink the current spike on every WiFi transmit (cheap insurance against
+brownout on battery); the sensor-init-ordering fix above turned out to be the
+actual fix for the failures we were seeing, not the TX power change, but both
+are kept.
 
 ## 9. Looking further ahead
 

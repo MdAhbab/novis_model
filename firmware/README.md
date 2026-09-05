@@ -61,8 +61,21 @@ hardware. See `docs/hardware_log.md` for the debugging history behind each.
 | `B5_speaker_chirp/` | PAM8302 + speaker, chirp only | **PASS** |
 | `B5_mic_speaker_echo_test/` | speaker + mic together (the real echo test) | **PASS** |
 | `sensors_combined_compile_check/` | all four drivers together, real B6 pins, in the shape `sensors.cpp` needs | compiles clean; not run as a combined unit on hardware yet |
-| `B6_full_module_test/` | all four sensors together, on the real assembled module — see `docs/NOVIS_Final_Module_Build.md` | compiles clean; run this once the physical module is built |
+| `B6_full_module_test/` | all four sensors together, on the real assembled module, printed to Serial — see `docs/NOVIS_Final_Module_Build.md` | **PASS** on the assembled module, USB power |
 | `crypto_compile_check/` | ChaCha20-Poly1305 via the `Crypto` library | compiles and runs |
+
+## Live dashboard + dataset capture (`dashboard/`)
+
+`dashboard/dashboard.ino` grew out of the `B6_full_module_test` bring-up test
+into a standing tool, so it lives outside `bench_tests/` rather than as one
+more one-component check. The ESP32 serves its own WiFi AP (`NOVIS-B6`) and a
+browser dashboard at `http://192.168.4.1/`: a live thermal heatmap, sonar and
+echo graphs on a distance axis, and a label/capture/download flow for
+building the paper's dataset straight from the browser — no laptop-side
+tooling needed. **PASS** on the assembled module, both USB and battery power;
+see `docs/hardware_log.md` section 8 for the two faults found getting it
+there (a loose ground, and a WiFi/I2C startup-ordering bug worth remembering
+for the BLE port below).
 
 ## Build and flash
 
