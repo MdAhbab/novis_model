@@ -104,7 +104,14 @@ static bool     gThermalOk = false;
 static int16_t  gThermal[NOVIS_THERMAL_PIXELS];    // centi-Celsius - BAA (wide/near)
 static bool     gThermalFarOk = false;
 static int16_t  gThermalFar[NOVIS_THERMAL_PIXELS]; // centi-Celsius - BAB (narrow/far)
-static int16_t  gEcho[NOVIS_ECHO_SAMPLES];        // 16-bit mono, post-chirp window
+static int16_t  gEcho[NOVIS_ECHO_SAMPLES];        // 16-bit mono, starts at the chirp
+// Raw capture is longer than the stored window: after the RX queue is drained,
+// the next buffer out still began filling up to one DMA buffer (I2S_CHUNK
+// samples, 16 ms) before the chirp, so the chirp lands somewhere in the first
+// I2S_CHUNK samples and the window is cut from wherever it is found.
+#define ECHO_RAW_N (NOVIS_ECHO_SAMPLES + I2S_CHUNK + 64)
+static int16_t  gEchoRaw[ECHO_RAW_N];
+static int16_t  gEchoOnset = -1;                  // raw index of the chirp, -1 = not found
 static uint16_t gLeft = 0, gRight = 0;
 static int32_t  gBefore = 0, gAfter = 0;
 static bool     gSpike = false;
@@ -149,15 +156,22 @@ static int32_t i2sReadPeak() {
 }
 
 // 5 ms chirp, 1 kHz -> 8 kHz.
+//
+// Driven straight through LEDC, not tone(). On ESP32 core 3.x tone() only
+// posts a message to a background FreeRTOS task that does the real LEDC work,
+// so the 250 us steps below became whatever that task's scheduling allowed -
+// the sweep was not the 5 ms chirp this code describes, and not reliably
+// timed against the recording. ledcWriteTone() changes the frequency right
+// here, synchronously. The pin is attached to LEDC once, in setup().
 static void emitChirp() {
   const int steps = 20;
   for (int i = 0; i < steps; i++) {
     float t = (float)i / (float)(steps - 1);
-    int freq = (int)(1000.0f * powf(8.0f, t));
-    tone(SPEAKER_PIN, freq);
+    uint32_t freq = (uint32_t)(1000.0f * powf(8.0f, t));
+    ledcWriteTone(SPEAKER_PIN, freq);
     delayMicroseconds(250);
   }
-  noTone(SPEAKER_PIN);
+  ledcWriteTone(SPEAKER_PIN, 0);
 }
 
 // Returns distance in millimetres, or 0 if nothing was detected.
@@ -173,33 +187,76 @@ static uint16_t readRange(int trigPin, int echoPin) {
 }
 
 // Ambient peak, then chirp, then keep the whole returning window.
+//
+// The earlier version called i2s_zero_dma_buffer() here to get rid of audio
+// recorded before the chirp. That only zeroes those buffers' contents - they
+// stay queued and still come out of i2s_read() first. On the first real
+// captures (2026-09-24) that put 384-742 zero samples at the start of every
+// 960-sample window: 24-46 ms, exactly where every echo from under ~4 m
+// arrives. The chirp itself was never in the recording, which is why the
+// echo channel never measured a distance.
+//
+// Now: drain the queued buffers so the next read is fresh audio, chirp,
+// record a longer raw stretch, find the chirp in it, and store the window
+// starting there - which is what BLANK (6 ms) in the dashboard already
+// assumed the window did.
+static void drainI2S() {
+  size_t n;
+  do {
+    n = 0;
+    i2s_read(I2S_PORT, i2sBuf, sizeof(i2sBuf), &n, 0);   // 0 ticks: never wait
+  } while (n > 0);
+}
+
 static void captureEcho() {
   gBefore = i2sReadPeak();
 
-  // The RX DMA holds up to 64 ms of already-recorded audio. Without this the
-  // "post-chirp" window would start with sound from before the chirp.
-  i2s_zero_dma_buffer(I2S_PORT);
+  drainI2S();
   emitChirp();
 
   int written = 0;
-  int32_t peak24 = 0;
-  while (written < NOVIS_ECHO_SAMPLES) {
+  int32_t rawPeak = 0;
+  while (written < ECHO_RAW_N) {
     size_t bytesRead = 0;
     i2s_read(I2S_PORT, i2sBuf, sizeof(i2sBuf), &bytesRead, portMAX_DELAY);
     int n = bytesRead / sizeof(int32_t);
-    for (int i = 0; i < n && written < NOVIS_ECHO_SAMPLES; i++) {
-      int32_t s24 = i2sBuf[i] >> 8;
-      int32_t mag = s24 < 0 ? -s24 : s24;
-      if (mag > peak24) peak24 = mag;
-
-      int32_t s16 = s24 >> 8;
+    for (int i = 0; i < n && written < ECHO_RAW_N; i++) {
+      int32_t s16 = (i2sBuf[i] >> 8) >> 8;   // 24-bit sample in a 32-bit word
       if (s16 >  32767) s16 =  32767;
       if (s16 < -32768) s16 = -32768;
-      gEcho[written++] = (int16_t)s16;
+      gEchoRaw[written++] = (int16_t)s16;
+      int32_t m = s16 < 0 ? -s16 : s16;
+      if (m > rawPeak) rawPeak = m;
     }
   }
 
-  gAfter = peak24;
+  // The chirp's direct path, a few cm from the mic, should be the loudest
+  // thing in the capture by a wide margin. Onset = first sample above both a
+  // multiple of the ambient level and a fraction of the capture's own peak,
+  // searched only where the chirp can be. If nothing clears that, the chirp
+  // was not heard: keep the raw start and report -1 rather than pretend.
+  int32_t ambient16 = gBefore >> 8;
+  int32_t thr = ambient16 * 4;
+  if (rawPeak * 3 / 10 > thr) thr = rawPeak * 3 / 10;
+  int onset = -1;
+  if (rawPeak > ambient16 * 4) {
+    for (int i = 0; i < ECHO_RAW_N - NOVIS_ECHO_SAMPLES; i++) {
+      int32_t a = gEchoRaw[i] < 0 ? -gEchoRaw[i] : gEchoRaw[i];
+      if (a > thr) { onset = i; break; }
+    }
+  }
+  gEchoOnset = (int16_t)onset;
+  int start = onset < 0 ? 0 : (onset >= 8 ? onset - 8 : 0);   // 0.5 ms pre-roll
+
+  int32_t peak16 = 0;
+  for (int i = 0; i < NOVIS_ECHO_SAMPLES; i++) {
+    int16_t s = gEchoRaw[start + i];
+    gEcho[i] = s;
+    int32_t m = s < 0 ? -s : s;
+    if (m > peak16) peak16 = m;
+  }
+
+  gAfter = peak16 << 8;                 // keep the 24-bit scale gBefore uses
   gSpike = (gAfter > gBefore * 2);
 }
 
@@ -267,6 +324,7 @@ static void handleFrame() {
           gLeft, gRight);
   jsonAdd("\"peaks\":{\"before\":%ld,\"after\":%ld,\"spike\":%s},",
           (long)gBefore, (long)gAfter, gSpike ? "true" : "false");
+  jsonAdd("\"echoOnset\":%d,", (int)gEchoOnset);
 
   jsonAdd("\"thermal\":[");
   for (int i = 0; i < NOVIS_THERMAL_PIXELS; i++) {
@@ -340,7 +398,9 @@ void setup() {
   pinMode(ECHO_LEFT,  INPUT);
   pinMode(TRIG_RIGHT, OUTPUT);
   pinMode(ECHO_RIGHT, INPUT);
-  pinMode(SPEAKER_PIN, OUTPUT);
+  // Speaker on LEDC directly (see emitChirp); silent until a frequency is set.
+  ledcAttach(SPEAKER_PIN, 1000, 8);
+  ledcWriteTone(SPEAKER_PIN, 0);
   digitalWrite(TRIG_LEFT,  LOW);
   digitalWrite(TRIG_RIGHT, LOW);
 

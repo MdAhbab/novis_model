@@ -181,6 +181,32 @@ def dead_pixel_mask(frames, thresh_c: float, min_frac: float,
     return (hits / t.shape[0]) >= min_frac
 
 
+# MLX90640 in chess mode reads its pixels as two interleaved sub-pages, the
+# black and white squares of a chessboard, at different moments. Whatever
+# shifts between the two reads - the sensor's own temperature estimate, a
+# moving person, a read stretched by WiFi - lands on one colour of square only.
+CHESS = (np.add.outer(np.arange(THERMAL_H), np.arange(THERMAL_W)) % 2).astype(bool)
+
+
+def remove_subpage_offset(frame: np.ndarray) -> np.ndarray:
+    """Cancel the offset between the two chess sub-pages of one frame.
+
+    Measured on the first real captures (24 Sept 2026): BAA's sub-pages sat
+    +2.5 to -5.3 C apart, varying scene to scene and frame to frame - as large
+    as a person's whole contrast against a room, drawn as a chessboard over
+    every frame. Each sub-page samples the same scene at every other pixel, so
+    for any real scene their medians agree; the gap between them is the
+    artefact, not the room. Splitting it evenly between the two leaves real
+    edges alone, which a blur would not.
+    """
+    f = frame.astype(np.float32)
+    d = float(np.median(f[CHESS]) - np.median(f[~CHESS]))
+    out = f.copy()
+    out[CHESS] -= d / 2
+    out[~CHESS] += d / 2
+    return out
+
+
 def repair_dead(centi_c: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Replace masked pixels with the median of their live neighbours."""
     if not mask.any():
@@ -283,6 +309,10 @@ def load_captures(patterns) -> tuple:
             if sid in scenes:
                 continue
             scenes[sid] = sc
+        # Echo recorded before the capture fix (dashboard meta without
+        # echo.capture == "aligned-v2") began every window with 384-742 zero
+        # samples and never contained the chirp - it is not an echo at all.
+        aligned = ((doc.get("meta") or {}).get("echo") or {}).get("capture") == "aligned-v2"
         kept, dropped, dup_here = [], 0, 0
         for s in doc["samples"]:
             if not s.get("thermalOk", True):
@@ -293,6 +323,7 @@ def load_captures(patterns) -> tuple:
                 dup_here += 1
                 continue
             seen.add(key)
+            s["_echoAligned"] = aligned
             kept.append(s)
         dupes += dup_here
         samples.extend(kept)
@@ -357,9 +388,32 @@ def main():
     ap.add_argument("--dead-pixel-frac", type=float, default=0.9,
                     help="fraction of frames a pixel must deviate in before "
                          "it is treated as dead rather than as a real object")
+    ap.add_argument("--raw-orientation", action="store_true",
+                    help="keep thermal in the sensor's raw order, which is "
+                         "mirrored left-right against the scene (confirmed "
+                         "by hand 2026-09-26); default flips it to match the photo")
+    ap.add_argument("--no-subpage-fix", action="store_true",
+                    help="keep the raw chess-pattern offset between the two "
+                         "MLX90640 sub-pages instead of cancelling it")
     args = ap.parse_args()
 
     scenes, samples = load_captures(args.captures)
+    subfix = (lambda f: f) if args.no_subpage_fix else remove_subpage_offset
+
+    # Report the sub-page offset every run - it is a property of the capture,
+    # worth seeing even when it is being corrected.
+    for name, key, okkey in (("BAA", "thermal", "thermalOk"),
+                             ("BAB", "thermalFar", "thermalFarOk")):
+        offs = [float(np.median(f[CHESS]) - np.median(f[~CHESS])) / 100
+                for f in (np.asarray(s[key], np.float32).reshape(THERMAL_H, THERMAL_W)
+                          for s in samples
+                          if s.get(key) is not None and s.get(okkey, True))]
+        if offs:
+            a = np.abs(offs)
+            print(f"{name}: chess sub-page offset median {np.median(a):.2f} C, "
+                  f"worst {a.max():.2f} C"
+                  + ("  (left in: --no-subpage-fix)" if args.no_subpage_fix
+                     else "  - cancelled per frame"))
 
     # One mask per sensor for the whole run: a dead pixel is a property of the
     # silicon, not of a scene, so pooling every frame is exactly what makes
@@ -368,7 +422,7 @@ def main():
         dead = {}
         for name, key, okkey in (("BAA", "thermal", "thermalOk"),
                                  ("BAB", "thermalFar", "thermalFarOk")):
-            frames = [np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W)
+            frames = [subfix(np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W))
                       for s in samples
                       if s.get(key) is not None and s.get(okkey, True)]
             dead[key] = dead_pixel_mask(frames, args.dead_pixel_thresh,
@@ -470,6 +524,7 @@ def main():
     bucket_counts = {}
     far_fallbacks = {}
     used_far = 0
+    echo_state = {"ok": 0, "old": 0, "unheard": 0}
     zeros_depth = np.zeros((1, OUT_H, OUT_W), np.float32)
 
     for s in samples:
@@ -501,12 +556,23 @@ def main():
         # Repair before normalising - a dead pixel reading 0 C would otherwise
         # set the low end of the whole frame under --thermal-norm perframe.
         raw = np.asarray(thermal_src).reshape(THERMAL_H, THERMAL_W)
+        raw = subfix(raw)
         raw = repair_dead(raw, dead["thermalFar" if is_far else "thermal"])
+        if not args.raw_orientation:
+            raw = raw[:, ::-1]      # un-mirror: left in the frame = left in the photo
         b["thermal"].append(thermal_to_01(raw, args.thermal_norm,
                                           args.temp_min, args.temp_max)[None])
         b["echo"].append(echo_to_spec(s["echo"]))
         b["sonar"].append(sonar_vector(s["sonarLeftMm"], s["sonarRightMm"]))
-        b["mask"].append(np.ones(3, np.float32))   # all three are real here
+        # mask order is [thermal, echo, sonar]. Echo counts as present only if
+        # the window was aligned to the chirp and the chirp was actually heard;
+        # otherwise the model is told it is missing rather than fed noise
+        # labelled as signal.
+        onset = s.get("echoOnset")
+        echo_ok = bool(s.get("_echoAligned")) and onset is not None and onset >= 0
+        echo_state[("ok" if echo_ok else
+                    "old" if not s.get("_echoAligned") else "unheard")] += 1
+        b["mask"].append(np.array([1.0, 1.0 if echo_ok else 0.0, 1.0], np.float32))
         b["gray"].append(gray)
         b["ab"].append(ab)
         b["inv_depth"].append(zeros_depth)
@@ -520,6 +586,17 @@ def main():
         counters[split] = _flush(bufs[split], out / split, counters[split])
         print(f"{split}: {n_used[split]} samples -> {counters[split]} shards "
               f"in {out / split}")
+    n_all = sum(echo_state.values())
+    print()
+    print(f"echo: {echo_state['ok']}/{n_all} samples usable")
+    if echo_state["old"]:
+        print(f"  {echo_state['old']} from captures made before the echo fix - their "
+              f"window never contained the chirp, so echo is masked off (mask[1]=0) "
+              f"for them. Thermal and sonar from those samples are still used.")
+    if echo_state["unheard"]:
+        print(f"  WARNING: {echo_state['unheard']} sample(s) where the node did not hear "
+              f"its own chirp (echoOnset -1) - masked off. Many of these means the "
+              f"speaker or amp is not producing sound.")
     if n_used["val"] == 0:
         print("\nWARNING: no val samples. Capture more scenes, or name val "
               "scenes explicitly with --held-out-scenes.")

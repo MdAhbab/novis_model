@@ -832,8 +832,8 @@ They are **not fused** into one array anywhere in firmware or in the model —
 by the scene's recorded distance, at prepare time. The model's `thermal`
 input shape is unchanged; this only decides which recorded frame fills it.
 
-**BAB has one dead pixel** (observed 2026-09-22, roughly column 5 / row 10;
-`prepare_novis.py` prints its exact index every run). It reads ~0 °C in every
+**BAB has one dead pixel** (observed 2026-09-22; at column 3, row 12 in raw sensor coordinates, as located by
+`prepare_novis.py` on the first real captures, 2026-09-24). It reads ~0 °C in every
 frame, at a fixed position. This is **normal and expected** — Melexis ships
 MLX90640 parts with a documented tolerance for dead and deviating pixels, and
 the factory logs the ones it knows about in the sensor's own EEPROM. **The
@@ -858,6 +858,50 @@ which leave the raw capture files exactly as the hardware produced them:
   defect. `--dead-pixel-thresh 0` disables it.
 
 Full operator-facing version: `docs/data_collection_protocol.md` section 4.2d.
+
+### Three faults found in the first real captures (2026-09-24)
+
+Found by running the capture pipeline on the first four real scenes, not on
+the bench - none of them shows up in a live dashboard reading.
+
+**1. Thermal is mirrored left-right.** Both MLX90640s deliver frames flipped
+against the scene: a person at the right of the photo sat at the left of the
+thermal frame (x = 0.87 vs 0.20). Confirmed by hand on 2026-09-26 - a hand
+moved right lit up the left of the panel. The `.json` deliberately keeps the
+sensor's raw order, so every capture ever made is in one orientation; the
+dashboard flips it for display and `prepare_novis.py` flips it before
+writing shards (`--raw-orientation` keeps it raw). Dead-pixel coordinates
+stay in raw sensor order.
+
+**2. Chess-pattern offset between the two sub-pages.** In chess mode the
+MLX90640 reads alternate pixels as two sub-pages at different moments.
+BAA's two sub-pages sat 2.9 C apart on median and up to 8.1 C in the worst
+frame - as large as a person's contrast against a room - drawn as a
+chessboard over every frame. `prepare_novis.py` cancels it per frame (the
+two sub-pages sample the same scene, so the gap between their medians is the
+artefact), which cut BAA's pixel-to-pixel jump from 3-5 C to 0.3-1.3 C with
+the person kept. Root cause not isolated on hardware; 8 Hz refresh with two
+sensors and WiFi sharing the loop is the first suspect.
+
+**3. The echo window never contained the chirp.** `captureEcho()` used
+`i2s_zero_dma_buffer()` to discard audio recorded before the chirp - but
+that only zeroes the queued buffers' contents; they still come out of
+`i2s_read()` first. Every stored 960-sample window began with 384-742 zero
+samples (24-46 ms), exactly where every echo from under ~4 m arrives, so
+`echoDistanceMm` came out 0 in 90 of 100 samples. Separately, `tone()` on
+ESP32 core 3.x only posts to a background task, so the 250 us chirp steps
+were not honoured.
+
+Fixed in the dashboard firmware: the speaker is driven through LEDC directly
+(`ledcWriteTone`, synchronous); the RX queue is drained with zero-wait reads
+before the chirp; a longer raw stretch is recorded and the stored window is
+cut at the detected chirp onset, which is saved per sample as `echoOnset`
+(-1 = chirp not heard). Exports now carry `meta.echo.capture = "aligned-v2"`;
+`prepare_novis.py` masks echo off (`mask[1] = 0`) for files without it and
+for samples with `echoOnset` -1, so pre-fix echo is treated as missing
+rather than fed to the model as signal. Compile verified (1055171 bytes,
+80%); **not yet verified on hardware** - the echo-returns pill on the
+dashboard is the check.
 
 ## 9. Looking further ahead
 

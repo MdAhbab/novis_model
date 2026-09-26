@@ -101,7 +101,7 @@ mid-session you find out that evening rather than in three months.
    |---|---|
    | **Thermal BAA** | pill says `sensor OK`, picture changes when you wave a hand |
    | Sonar | two numbers that change as you move a hand in front |
-   | Echo | a visible spike, `spike` flag lighting up |
+   | Echo | **`echo returns` pill above 0** — the `spike` flag alone is not proof the echo works |
    | Thermal BAB | `sensor OK` — you do not frame to it, but it should be alive |
 
 6. **One quick look at BAA's panel:** wave your warm hand across the view. Does

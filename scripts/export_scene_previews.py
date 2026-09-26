@@ -44,11 +44,14 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prepare_novis import (THERMAL_H, THERMAL_W,  # noqa: E402
-                           dead_pixel_mask, load_captures, repair_dead)
+                           dead_pixel_mask, load_captures,
+                           remove_subpage_offset, repair_dead)
 
 # The dashboard's own colour ramp, copied from firmware/dashboard/page_html.h.
 # Kept identical on purpose: a preview that does not look like what you saw on
 # the phone in the room is a preview you cannot compare against your memory.
+RAW = False   # set from --no-repair
+
 STOPS = [(0.00, 8, 5, 30), (0.15, 44, 17, 96), (0.30, 87, 21, 126),
          (0.45, 138, 34, 106), (0.60, 186, 54, 85), (0.75, 224, 92, 47),
          (0.88, 248, 149, 64), (1.00, 252, 255, 164)]
@@ -110,6 +113,8 @@ def mean_thermal(rows, key, okkey):
     most of the per-frame sensor noise, so what is left is the scene itself."""
     frames = [np.asarray(s[key], dtype=np.float32).reshape(THERMAL_H, THERMAL_W)
               for s in rows if s.get(key) is not None and s.get(okkey, True)]
+    if not RAW:
+        frames = [remove_subpage_offset(f) for f in frames]
     if not frames:
         return None, []
     return np.mean(frames, axis=0), frames
@@ -125,8 +130,11 @@ def main():
     ap.add_argument("--photo-width", type=int, default=520,
                     help="width the photo is scaled to in pair.jpg")
     ap.add_argument("--no-repair", action="store_true",
-                    help="show raw frames, including dead pixels")
+                    help="show raw frames: dead pixels and the chess "
+                         "sub-page offset both left in")
     args = ap.parse_args()
+    global RAW
+    RAW = args.no_repair
 
     # The same loader prepare_novis.py uses, so the previews are built from
     # exactly the samples that will become training data - including its
@@ -141,7 +149,7 @@ def main():
     masks = {}
     if not args.no_repair:
         for key, okkey in (("thermal", "thermalOk"), ("thermalFar", "thermalFarOk")):
-            fr = [np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W)
+            fr = [remove_subpage_offset(np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W))
                   for s in samples
                   if s.get(key) is not None and s.get(okkey, True)]
             masks[key] = dead_pixel_mask(fr, 5.0, 0.9)
@@ -172,6 +180,8 @@ def main():
                 continue
             if not args.no_repair and masks.get(key) is not None:
                 avg = repair_dead(avg, masks[key])
+            if not RAW:
+                avg = avg[:, ::-1]      # sensor frames are mirrored against the photo
             img, lo, hi = thermal_png(avg, args.scale)
             img.save(d / f"thermal_{label}.png")
             lo_hi[label] = (lo, hi, len(frames))

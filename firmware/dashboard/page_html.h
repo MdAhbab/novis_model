@@ -529,6 +529,19 @@ const img = offCtx.createImageData(TW,TH);
 // and the hotspot search, so one bad pixel can't wash out or mislabel the
 // rest of the frame. The literal min/max is kept too (for the numeric
 // readout) precisely because it is what makes a dead pixel visible at all.
+// MLX90640 frames arrive mirrored left-right against the scene - confirmed by
+// hand on 2026-09-26: a hand moved to the right lit up the LEFT of the panel,
+// on both sensors. Flipped here, for DISPLAY only. The .json keeps the
+// sensor's raw order, so every capture ever made stays in one orientation and
+// scripts/prepare_novis.py flips them all the same way at prepare time.
+function mirror(arr){
+  if(!arr) return arr;
+  const out = new Array(TW*TH);
+  for(let y=0;y<TH;y++)
+    for(let x=0;x<TW;x++) out[y*TW+x] = arr[y*TW + (TW-1-x)];
+  return out;
+}
+
 function percentileBounds(arr, frac){
   const sorted = Array.prototype.slice.call(arr).sort((a,b)=>a-b);
   const n = sorted.length;
@@ -548,6 +561,7 @@ function paintThermal(cv, arr, withHotspot, respectLock){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,cv.width,cv.height);
   if(!arr) return null;
+  arr = mirror(arr);     // hotspot coordinates below are therefore display coordinates
 
   let lo=1e9, hi=-1e9;
   for(let i=0;i<arr.length;i++){
@@ -1048,7 +1062,8 @@ function capture(){
     // storing both means that decision is never locked in at capture time.
     thermalFarOk:d.thermalFarOk, thermalFar:d.thermalFar,
     sonarLeftMm:d.sonar.left, sonarRightMm:d.sonar.right,
-    echo:d.echo, peakBefore:d.peaks.before, peakAfter:d.peaks.after, spike:d.peaks.spike,
+    echo:d.echo, echoOnset:(d.echoOnset === undefined ? null : d.echoOnset),
+    peakBefore:d.peaks.before, peakAfter:d.peaks.after, spike:d.peaks.spike,
     echoDistanceMm: hit ? hit.mm : 0, echoTofMs: hit ? +hit.tMs.toFixed(3) : 0
   });
   $('dsLast').textContent = new Date().toLocaleTimeString();
@@ -1099,7 +1114,9 @@ function meta(){
     device:'ESP32-WROOM-32', project:'NOVIS', capturedWith:'firmware/dashboard/dashboard.ino',
     thermal:{sensor:'MLX90640 (BAA, wide FOV, shorter usable range)',
              width:TW, height:TH, order:'row-major',
-             unit:'centi-Celsius', note:'divide by 100 for degrees C', refreshHz:8},
+             unit:'centi-Celsius', note:'divide by 100 for degrees C', refreshHz:8,
+             orientation:'sensor raw order - MIRRORED left-right against the scene; '
+                         + 'the dashboard and prepare_novis.py flip it, the file does not'},
     thermalFar:{sensor:'MLX90640 (BAB, narrower FOV, longer usable range)',
                 width:TW, height:TH, order:'row-major', unit:'centi-Celsius',
                 note:'same shape and units as thermal; stored on every sample so '
@@ -1109,7 +1126,14 @@ function meta(){
                     + 'fixed sensor address and cannot coexist on one bus'},
     sonar:{sensor:'HC-SR04 x2', unit:'mm', zeroMeans:'no echo within the 30 ms timeout'},
     echo:{mic:'INMP441', samples:ECHO_N, sampleRateHz:SR, format:'int16 mono',
-          window:'captured immediately after the chirp, DMA flushed first',
+          window:'starts at the chirp: RX queue drained, chirp, long raw read, window cut '
+                 + 'at the detected chirp onset (0.5 ms pre-roll)',
+          capture:'aligned-v2',
+          captureNote:'files without capture:aligned-v2 were recorded with a window that '
+                      + 'began with 384-742 zero samples and never contained the chirp; '
+                      + 'their echo carries no echo information',
+          onsetField:'echoOnset on each sample: raw index where the chirp was found, '
+                     + '-1 if it was not heard (window then starts unaligned)',
           chirp:'5 ms, 1 kHz to 8 kHz, PAM8302 + speaker on GPIO4'},
     echoDistance:{formula:'d = v*t/2  (2d = vt)', speedOfSoundMs:SOUND,
                   unit:'mm', zeroMeans:'no return cleared the noise floor',
@@ -1174,7 +1198,7 @@ function thermalCanvas(arr, w, h){
     im.data[i*4]=c[0]; im.data[i*4+1]=c[1]; im.data[i*4+2]=c[2]; im.data[i*4+3]=255;
   }
   sc.putImageData(im, 0, 0);
-  const out = document.createElement('canvas');
+  const out = document.createElement('canvas');   // (arr already mirrored by the caller)
   out.width = w; out.height = h;
   const oc = out.getContext('2d');
   oc.imageSmoothingEnabled = S.smooth;
@@ -1202,7 +1226,7 @@ function saveScenePng(){
     ctx.fillStyle = '#10121a';
     ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, PW, H);
-    const t = thermalCanvas(m.arr, TWID, H);
+    const t = thermalCanvas(mirror(m.arr), TWID, H);
     ctx.drawImage(t.canvas, PW + GAP, 0);
 
     let sl = 0, sr = 0, ne = 0;
