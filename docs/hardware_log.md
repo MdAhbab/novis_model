@@ -60,7 +60,7 @@ five wired at once it would have been hopeless.
 | B6 | Full assembly | **PASS** — USB and battery, see section 8 and `docs/NOVIS_Final_Module_Build.md` |
 | C | `sensors.cpp`, `crypto.cpp`, BLE | drivers + crypto **compile-verified** on ESP32; **BLE not started**, see section 9 |
 | D | Host BLE receive | not started |
-| E | 12-scene capture | **start ethics paperwork now** — takes weeks |
+| E | Real dataset capture | procedure ready — `docs/data_collection_protocol.md`; **ethics paperwork still needed for scenes with people** |
 | F | Power/range/latency | not started |
 
 B2 took most of two days. Section 4 explains why, because the cause was not
@@ -801,6 +801,64 @@ brownout on battery); the sensor-init-ordering fix above turned out to be the
 actual fix for the failures we were seeing, not the TX power change, but both
 are kept.
 
+### A second thermal sensor: BAA (wide/near) and BAB (narrow/far)
+
+Two MLX90640 units are now wired, chosen to be complementary rather than
+identical: BAA is wide-FOV with a shorter usable depth, BAB narrower-FOV with
+a longer one (see `docs/data_collection_protocol.md` section 4.2c for the
+calibration procedure that measures each one's actual R_use — do not assume
+either number, measure it the same way section 4.2b already does for one
+sensor).
+
+**Wiring**: GY-MCU90640 modules answer at a fixed I2C address (`0x33`) with no
+way to change it, so two on one bus collide. BAB goes on ESP32's *second*,
+independent I2C peripheral instead of sharing BAA's bus:
+
+| | SDA | SCL |
+|---|---|---|
+| BAA (existing) | GPIO21 | GPIO22 |
+| BAB (new) | GPIO33 | GPIO25 |
+
+GPIO33/25 were chosen because they are free in the B6 pin plan and are not
+strapping pins (unlike GPIO0/2/5/12/15, which affect boot mode if pulled the
+wrong way at reset). Same PS-to-GND and pull-up requirements as BAA apply to
+BAB independently — it is a second instance of the same sensor, not a
+different part.
+
+`firmware/dashboard/dashboard.ino` reads both every cycle (`Wire` for BAA,
+a second `TwoWire(1)` instance for BAB) and the dashboard shows both live.
+They are **not fused** into one array anywhere in firmware or in the model —
+`scripts/prepare_novis.py --baa-max-range` picks one or the other per scene,
+by the scene's recorded distance, at prepare time. The model's `thermal`
+input shape is unchanged; this only decides which recorded frame fills it.
+
+**BAB has one dead pixel** (observed 2026-09-22, roughly column 5 / row 10;
+`prepare_novis.py` prints its exact index every run). It reads ~0 °C in every
+frame, at a fixed position. This is **normal and expected** — Melexis ships
+MLX90640 parts with a documented tolerance for dead and deviating pixels, and
+the factory logs the ones it knows about in the sensor's own EEPROM. **The
+part does not need replacing and calibration would not help**: calibration
+adjusts a pixel's gain and offset, which presupposes the pixel is reading
+something at all.
+
+It is also not repaired for us. `Adafruit_MLX90640::getFrame()` calls
+`MLX90640_CalculateTo` but never `MLX90640_BadPixelsCorrection`, so bad pixels
+arrive in the frame buffer untouched. Handled in two places instead, both of
+which leave the raw capture files exactly as the hardware produced them:
+
+- **Dashboard** — colour-ranges on the 1st/99th percentile rather than the
+  literal min/max, so one pixel cannot flatten the whole image, and the
+  hotspot crosshair skips outliers. The MIN/MAX readout deliberately still
+  shows the literal extremes (that is what makes the pixel visible); the
+  status pill reads `sensor OK · check dead pixel` when it spots one.
+- **`scripts/prepare_novis.py`** — detects dead pixels per sensor across a
+  whole run and fills them from their live neighbours before normalising. A
+  pixel must sit >5 °C off its neighbours in ≥90% of *all* frames to qualify,
+  which is what keeps a real person-at-distance from being erased as a
+  defect. `--dead-pixel-thresh 0` disables it.
+
+Full operator-facing version: `docs/data_collection_protocol.md` section 4.2d.
+
 ## 9. Looking further ahead
 
 ### Firmware (Part C) — the BLE side is the real remaining work
@@ -853,8 +911,13 @@ Write down what you actually measure, never what you expected:
 
 ### Part E — start the paperwork now
 
-Ethics approval can take weeks and the 12-scene capture cannot legally start
-without it. Needed: consent from everyone in the room, a simple consent form, and
+The full capture-to-training procedure now lives in
+`docs/data_collection_protocol.md` (scene naming, the ground-truth photo rules,
+how many scenes, the prepare/check/train commands). This section stays as the
+legal side of it.
+
+Ethics approval can take weeks and any capture **with people in it** cannot
+start without it — people-free scenes can be collected meanwhile. Needed: consent from everyone in the room, a simple consent form, and
 face blurring before data leaves the recording machine. Split the dataset **by
 scene, never by frame** — frames from the same room in both train and test will be
 caught by reviewers. Worth stating in the paper: the 60 ms echo recordings are
