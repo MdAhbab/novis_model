@@ -903,6 +903,16 @@ rather than fed to the model as signal. Compile verified (1055171 bytes,
 80%); **not yet verified on hardware** - the echo-returns pill on the
 dashboard is the check.
 
+**Echo distance, audited 2026-09-26.** Distance is `d = v * t / 2` with `t`
+measured from the chirp (`echoOnset`, normally sample 8 of the window, since
+0.5 ms of pre-roll is kept) - measuring from the window start instead adds
++86 mm to every reading. Checked against synthetic echoes at known distances:
+1.1 to 6.0 m all within one sample (10.7 mm). **Blind zone: under ~1.03 m**,
+because the 5 ms chirp and its 6 ms blanking cover the time an echo from that
+close needs; the detector now reports nothing there instead of the blank edge
+(it used to return 1029 mm for walls anywhere from ~0.6 to 1 m). Sonar covers
+that range. Sonar's own formula (`mm = us * 343 / 2000`) checks out exactly.
+
 ## 9. Looking further ahead
 
 ### Firmware (Part C) — the BLE side is the real remaining work

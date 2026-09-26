@@ -711,19 +711,41 @@ function drawSonar(){
 //
 // Returns {index, tMs, mm} for the nearest surface, or null if nothing came
 // back loudly enough - which is itself a real reading: no surface in range.
-function echoDistance(echo){
+// Echo time of flight, measured from the chirp: d = v * t / 2.
+// onset = the chirp's index inside the window (firmware echoOnset, normally 8
+// because 0.5 ms of pre-roll is kept before it). Measuring from the window
+// start instead would add that pre-roll to every flight time: +86 mm on every
+// distance. onset -1 means the node never heard its own chirp, so there is no
+// time zero and no distance to report. Captures from before echoOnset existed
+// pass undefined and keep the old assumption that the window began at the chirp.
+function echoDistance(echo, onset){
   if(!echo) return null;
+  if(onset === -1) return null;
+  const t0 = (onset === undefined || onset === null) ? 0 : onset;
   let acc = 0, n = 0;
   for(let i=Math.floor(ECHO_N*0.75);i<ECHO_N;i++){ acc += echo[i]*echo[i]; n++; }
   const rms = Math.sqrt(acc/Math.max(1,n));
   let peakPost = 0;
-  for(let i=BLANK;i<ECHO_N;i++){ const a=Math.abs(echo[i]); if(a>peakPost) peakPost=a; }
+  for(let i=t0+BLANK;i<ECHO_N;i++){ const a=Math.abs(echo[i]); if(a>peakPost) peakPost=a; }
   const thr = Math.max(rms*4, peakPost*0.25);
-  for(let i=BLANK;i<ECHO_N;i++){
+  // An echo counts only where it RISES out of quiet: the W samples before it
+  // must all be under the threshold. Without that, a surface nearer than the
+  // blind zone (~1 m) - whose echo starts inside the blanked chirp but whose
+  // tail runs past BLANK - was reported at exactly the blank edge, 1029 mm,
+  // for anything from ~0.6 m to 1 m. That is a wrong number, which is worse
+  // than none; sonar covers that range. W (0.5 ms) is longer than half a
+  // period of the chirp's lowest tone, so a single echo's own zero-crossings
+  // never look like a gap.
+  const W = 8;
+  let quiet = 0;
+  for(let i=t0+BLANK-W;i<ECHO_N;i++){
     if(Math.abs(echo[i])>thr){
-      const t = i/SR;                                  // seconds since the chirp
-      return {index:i, tMs:t*1000, mm:Math.round(SOUND*t/2*1000)};
-    }
+      if(quiet>=W && i>=t0+BLANK){
+        const t = (i - t0)/SR;                         // seconds since the chirp
+        return {index:i, tMs:t*1000, mm:Math.round(SOUND*t/2*1000)};
+      }
+      quiet = 0;
+    } else quiet++;
   }
   return null;
 }
@@ -766,7 +788,7 @@ function drawEcho(echo){
   }
 
   // Mark where the nearest surface answered.
-  const hit = echoDistance(echo);
+  const hit = echoDistance(echo, S.last ? S.last.echoOnset : undefined);
   if(hit){
     const x = (hit.index/ECHO_N)*w;
     ctx.strokeStyle='#4ade80'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
@@ -864,7 +886,7 @@ async function poll(){
     // The two use different physics on different hardware, so when they
     // agree the echolocation path is genuinely working - that agreement is
     // the number worth reporting, not the raw peak heights.
-    const hit = echoDistance(d.echo);
+    const hit = echoDistance(d.echo, d.echoOnset);
     const sonarMm = [d.sonar.left, d.sonar.right].filter(v => v > 0);
     const nearest = sonarMm.length ? Math.min(...sonarMm) : null;
     $('eDist').textContent   = hit ? hit.mm+' mm' : 'no return';
@@ -1052,7 +1074,7 @@ function capture(){
   // that the number in the file is the same one the operator saw and sanity
   // checked against sonar while standing in the room. The raw echo array is
   // stored too, so it can always be recomputed differently later.
-  const hit = echoDistance(d.echo);
+  const hit = echoDistance(d.echo, d.echoOnset);
   S.dataset.push({
     sceneId:id, seq:d.seq, deviceMs:d.tMs, wallClock:new Date().toISOString(),
     thermalOk:d.thermalOk, thermal:d.thermal,
@@ -1132,8 +1154,9 @@ function meta(){
           captureNote:'files without capture:aligned-v2 were recorded with a window that '
                       + 'began with 384-742 zero samples and never contained the chirp; '
                       + 'their echo carries no echo information',
-          onsetField:'echoOnset on each sample: raw index where the chirp was found, '
-                     + '-1 if it was not heard (window then starts unaligned)',
+          onsetField:'echoOnset on each sample: index of the chirp inside the echo '
+                     + 'window (normally 8 - 0.5 ms pre-roll is kept), i.e. time zero '
+                     + 'for every echo; -1 if the chirp was not heard',
           chirp:'5 ms, 1 kHz to 8 kHz, PAM8302 + speaker on GPIO4'},
     echoDistance:{formula:'d = v*t/2  (2d = vt)', speedOfSoundMs:SOUND,
                   unit:'mm', zeroMeans:'no return cleared the noise floor',

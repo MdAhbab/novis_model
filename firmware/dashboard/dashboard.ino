@@ -111,7 +111,7 @@ static int16_t  gEcho[NOVIS_ECHO_SAMPLES];        // 16-bit mono, starts at the 
 // I2S_CHUNK samples and the window is cut from wherever it is found.
 #define ECHO_RAW_N (NOVIS_ECHO_SAMPLES + I2S_CHUNK + 64)
 static int16_t  gEchoRaw[ECHO_RAW_N];
-static int16_t  gEchoOnset = -1;                  // raw index of the chirp, -1 = not found
+static int16_t  gEchoOnset = -1;                  // chirp's index inside gEcho, -1 = not heard
 static uint16_t gLeft = 0, gRight = 0;
 static int32_t  gBefore = 0, gAfter = 0;
 static bool     gSpike = false;
@@ -245,8 +245,10 @@ static void captureEcho() {
       if (a > thr) { onset = i; break; }
     }
   }
-  gEchoOnset = (int16_t)onset;
   int start = onset < 0 ? 0 : (onset >= 8 ? onset - 8 : 0);   // 0.5 ms pre-roll
+  // Stored as the chirp's position INSIDE the window (normally 8), because that
+  // is time zero for every echo in it: distance = v * (i - echoOnset) / SR / 2.
+  gEchoOnset = onset < 0 ? -1 : (int16_t)(onset - start);
 
   int32_t peak16 = 0;
   for (int i = 0; i < NOVIS_ECHO_SAMPLES; i++) {
