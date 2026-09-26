@@ -4,7 +4,10 @@ __pycache__/
 data/raw/*
 !data/raw/README.md
 data/processed/
-data/real_capture/
+data/real_capture/*
+!data/real_capture/README.md
+data/previews/*
+!data/previews/README.md
 checkpoints/
 results/
 *.onnx
