@@ -295,9 +295,13 @@ lighting, note** — is stored in the `.json`, in its `scenes` block, alongside
 the photo itself. Nothing is lost, and you never have to download photos
 separately.
 
-But the `.json` is not something you can *look at* on a phone. So there is a
-**"Save scene .png"** button next to the capture button. One tap writes a
-single picture to the phone:
+But the `.json` is not something you can *look at* on a phone. So there are
+two buttons next to the capture button:
+
+- **"Save scene .png"** — one picture: your photo beside the averaged BAA
+  frame, with the readings printed under it.
+- **"Save photo .jpg"** — just the plain photo, exactly as it sits in the
+  `.json`. No thermal, no composition.
 
 ```
    +------------------------+--------+
@@ -312,10 +316,19 @@ single picture to the phone:
    +----------------------------------------------------+
 ```
 
-**It is optional.** The `.json` already holds all of it, and
-`scripts/export_scene_previews.py` builds the same picture for every scene at
-once on the laptop. Use the button when you want to keep, check or send one
-scene on the spot — no laptop, no waiting until evening.
+**Both are optional.** The `.json` already holds all of it, and
+`scripts/export_scene_previews.py` builds the same pictures for every scene at
+once on the laptop, plus a third panel — the merged BAA+BAB frame — that
+these two phone-side buttons do not. Use them when you want to keep, check or
+send one scene on the spot — no laptop, no waiting until evening.
+
+**File names never collide.** Both buttons save as
+`novis_<scene id>_<timestamp>.png` / `.jpg` — for example
+`novis_grid-d150-xp45_2026-09-27T10-15-30.png`. Saving the same scene twice
+(topping up samples, redoing a shot) always gets a fresh timestamp, so the
+phone never has to silently rename a file `(1)`, `(2)`… and Downloads sorts
+in the order you actually captured, even across different sessions that
+reused a scene id.
 
 ### Downloading: NOT after every scene
 

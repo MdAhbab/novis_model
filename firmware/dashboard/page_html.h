@@ -405,13 +405,18 @@ static const char PAGE_HTML[] PROGMEM = R"rawliteral(
             <button id="btnCapture">Capture 1 sample</button>
             <button id="btnAuto">Auto-capture: off</button>
             <button id="btnScenePng">Save scene .png</button>
+            <button id="btnScenePhoto">Save photo .jpg</button>
             <span class="pill" id="dsSceneCount">0 in this scene</span>
             <span class="pill" id="dsBurst" hidden>&mdash;</span>
           </div>
           <div class="hint" style="margin-top:-4px">&ldquo;Save scene .png&rdquo; writes one
             picture &mdash; your photo beside the averaged thermal frame, with the readings
-            printed under it &mdash; straight to this phone, no laptop needed. Optional: the
-            <code>.json</code> already holds everything, and
+            printed under it &mdash; straight to this phone, no laptop needed.
+            &ldquo;Save photo .jpg&rdquo; writes just the plain photo, exactly as stored in the
+            <code>.json</code>. Both are named <code>novis_&lt;scene id&gt;_&lt;timestamp&gt;</code>
+            so re-saving the same scene never collides with an earlier save or gets silently
+            renamed <code>(1)</code>, <code>(2)</code>&hellip; by the phone. Optional either way:
+            the <code>.json</code> already holds everything, and
             <code>scripts/export_scene_previews.py</code> makes the same images for every scene
             at once. Use this when you want to keep or send one scene on the spot.</div>
           <div class="hint" style="margin-top:-4px">One button per scene: it takes 25 samples,
@@ -1187,6 +1192,16 @@ function download(name, text, type){
 }
 function stamp(){ return new Date().toISOString().replace(/[:.]/g,'-').slice(0,19); }
 
+// One naming rule for every per-scene file, so the phone never has to
+// silently rename a save to (1), (2)... A scene is commonly saved more than
+// once - topping up samples, redoing a shot - and a bare scene id collides
+// with itself on the second save. The timestamp also means Downloads sorts
+// chronologically, matching capture order even across sessions that reused
+// a scene id.
+function sceneFileName(id, ext){
+  return 'novis_'+id.replace(/[^A-Za-z0-9_.-]/g,'_')+'_'+stamp()+'.'+ext;
+}
+
 /* ---------- one scene as a picture, on the phone ----------
    Same layout scripts/export_scene_previews.py produces on the laptop, so a
    png saved here and one built later from the .json look alike. The .json is
@@ -1270,11 +1285,24 @@ function saveScenePng(){
 
     cv.toBlob(b => {
       if(!b){ alert('This browser could not build the png.'); return; }
-      downloadBlob(id.replace(/[^A-Za-z0-9_.-]/g,'_')+'.png', b);
+      downloadBlob(sceneFileName(id, 'png'), b);
     }, 'image/png');
   };
   img.onerror = ()=>alert('Could not read this scene’s photo.');
   img.src = sc.photo;
+}
+
+// The plain photo, exactly as it sits in the .json (already cropped to
+// PHOTO_W x PHOTO_H, already a JPEG) - no thermal, no composition. For
+// keeping or sending just the picture, saved with the same collision-proof
+// name as the .png.
+function saveScenePhoto(){
+  const id = sceneId();
+  const sc = S.scenes[id];
+  if(!id || !sc){ alert('Capture this scene first - there is nothing to save yet.'); return; }
+  fetch(sc.photo).then(r => r.blob()).then(b => {
+    downloadBlob(sceneFileName(id, 'jpg'), b);
+  });
 }
 
 /* ---------- wiring ---------- */
@@ -1310,6 +1338,7 @@ $('btnLock').onclick = e => {
   if(S.last) drawThermal(S.last.thermal);
 };
 $('btnScenePng').onclick = saveScenePng;
+$('btnScenePhoto').onclick = saveScenePhoto;
 $('btnJson').onclick = ()=>{
   if(!S.dataset.length) return;
   download('novis_dataset_'+stamp()+'.json',
