@@ -913,6 +913,42 @@ close needs; the detector now reports nothing there instead of the blank edge
 (it used to return 1029 mm for walls anywhere from ~0.6 to 1 m). Sonar covers
 that range. Sonar's own formula (`mm = us * 343 / 2000`) checks out exactly.
 
+### Merging BAA and BAB into one frame (2026-09-27)
+
+The two sensors combine the way one eye does: BAA is the wide, blurry
+periphery; BAB is a fovea about twice as sharp covering the middle of the
+same view. `scripts/fuse_thermal.py` builds one merged frame over BAA's whole
+field of view - exactly what the ground-truth photo is framed to - with BAB's
+pixels in the centre. `export_scene_previews.py` now shows photo | BAA |
+merged for every scene. It is **not stereo**: the sensors sit ~1 cm apart
+with different widths of view, so there is no usable disparity and no depth.
+
+Where BAB sits inside BAA's view is measured from the captures, not assumed.
+On the four scenes of 2026-09-24: BAB covers **0.62 x 0.48** of BAA's frame,
+centred at **(0.50, 0.47)**, match r = 0.90 - the mount is essentially
+co-axial. The width is the least certain number (0.58-0.62 between searches
+on four scenes); a hot-mug calibration or more scenes will pin it. A
+pinhole-lens model fits clearly worse (r = 0.75) than equal-angle pixels. On a
+synthetic scene with a known answer the registration recovered BAB's position
+within 0.005 and the merged frame had 21% less error than BAA at object
+edges. On the real Room925_2 scene it resolves the elbows of a person
+standing with hands behind their back, where BAA alone shows a blob.
+
+BAB reads the same room ~2 C warmer than BAA; the merge matches only that
+offset (median over the overlap), not the contrast - BAB reads warm bodies
+hotter because its smaller pixels mix in less background, which is real.
+
+**Biased pixels.** Alive but reading a steady amount off - unlike a dead
+pixel. BAB's raw (2,13), diagonal to its dead pixel, reads 0.7-1.0 C low in
+all four rooms; it showed as a dot in the merged fovea. A pixel whose offset
+from its neighbours has the same sign and is >= 0.4 C in every scene of a run
+(>= 3 scenes) now gets that offset subtracted in `prepare_novis.py` and the
+previews - an offset calibration, which keeps the pixel's reading instead of
+overwriting it. First run: 8 on BAA (mostly edge and corner pixels) and 13 on
+BAB. **Still open:** BAA's outer corners keep some chessboard, because its
+sub-page offset varies across the frame and the per-frame correction removes
+only its average.
+
 ## 9. Looking further ahead
 
 ### Firmware (Part C) — the BLE side is the real remaining work

@@ -207,6 +207,37 @@ def remove_subpage_offset(frame: np.ndarray) -> np.ndarray:
     return out
 
 
+def pixel_offsets(frames_by_scene, dead_mask: np.ndarray, min_scenes: int = 3,
+                  thresh_c: float = 0.4) -> np.ndarray:
+    """Fixed per-pixel offsets for pixels that are alive but biased.
+
+    Not the same as a dead pixel. A biased pixel still follows the scene, it
+    just reads a steady amount off - on the first captures BAB's raw (2,13),
+    diagonal to its dead pixel, read 0.7 to 1.0 C low in all four rooms.
+    Too weak for dead_pixel_mask, and visible as a dot once a colour scale is
+    stretched. A real edge lands on a given pixel in one room, not in every
+    room, so the rule is: the pixel's median offset from its 8 neighbours has
+    the same sign and is at least thresh_c in EVERY scene of the run, over at
+    least min_scenes scenes. Such a pixel gets that offset subtracted - an
+    offset calibration, which keeps the pixel's own reading rather than
+    overwriting it the way dead-pixel repair has to.
+
+    frames_by_scene: list of lists of (24, 32) centi-C frames, sub-page offset
+    already removed. Returns a (24, 32) centi-C offset map, zero elsewhere.
+    """
+    per_scene = []
+    for frames in frames_by_scene:
+        if frames:
+            f = np.stack(frames).astype(np.float32)
+            per_scene.append(np.median(f - _neighbour_median(f), axis=0))
+    if len(per_scene) < min_scenes:
+        return np.zeros((THERMAL_H, THERMAL_W), np.float32)
+    P = np.stack(per_scene) / 100.0
+    biased = ((np.all(P >= thresh_c, axis=0) | np.all(P <= -thresh_c, axis=0))
+              & ~dead_mask)
+    return np.where(biased, np.median(P, axis=0) * 100.0, 0.0).astype(np.float32)
+
+
 def repair_dead(centi_c: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Replace masked pixels with the median of their live neighbours."""
     if not mask.any():
@@ -418,6 +449,8 @@ def main():
     # One mask per sensor for the whole run: a dead pixel is a property of the
     # silicon, not of a scene, so pooling every frame is exactly what makes
     # "off in essentially every frame" a meaningful test.
+    zero = np.zeros((THERMAL_H, THERMAL_W), np.float32)
+    offsets = {"thermal": zero, "thermalFar": zero}
     if args.dead_pixel_thresh > 0:
         dead = {}
         for name, key, okkey in (("BAA", "thermal", "thermalOk"),
@@ -444,6 +477,18 @@ def main():
                       f"normal part tolerance - inspect the sensor before "
                       f"trusting this data, or raise --dead-pixel-thresh if "
                       f"the scenes really were this high-contrast.")
+            by_scene = {}
+            for s in samples:
+                if s.get(key) is not None and s.get(okkey, True):
+                    by_scene.setdefault(s["sceneId"], []).append(
+                        subfix(np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W)))
+            offsets[key] = pixel_offsets(list(by_scene.values()), dead[key])
+            nb = np.flatnonzero(offsets[key])
+            if nb.size:
+                print(f"{name}: {nb.size} biased pixel(s) "
+                      + ", ".join(f"({i % THERMAL_W},{i // THERMAL_W}) "
+                                  f"{offsets[key].flat[i] / 100:+.2f} C" for i in nb[:6])
+                      + f" - same offset in all {len(by_scene)} scenes, corrected")
     else:
         dead = {"thermal": np.zeros((THERMAL_H, THERMAL_W), bool),
                 "thermalFar": np.zeros((THERMAL_H, THERMAL_W), bool)}
@@ -557,6 +602,7 @@ def main():
         # set the low end of the whole frame under --thermal-norm perframe.
         raw = np.asarray(thermal_src).reshape(THERMAL_H, THERMAL_W)
         raw = subfix(raw)
+        raw = raw - offsets["thermalFar" if is_far else "thermal"]
         raw = repair_dead(raw, dead["thermalFar" if is_far else "thermal"])
         if not args.raw_orientation:
             raw = raw[:, ::-1]      # un-mirror: left in the frame = left in the photo

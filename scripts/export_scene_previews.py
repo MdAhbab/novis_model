@@ -44,8 +44,9 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prepare_novis import (THERMAL_H, THERMAL_W,  # noqa: E402
-                           dead_pixel_mask, load_captures,
+                           dead_pixel_mask, load_captures, pixel_offsets,
                            remove_subpage_offset, repair_dead)
+from fuse_thermal import fuse, register  # noqa: E402
 
 # The dashboard's own colour ramp, copied from firmware/dashboard/page_html.h.
 # Kept identical on purpose: a preview that does not look like what you saw on
@@ -132,6 +133,12 @@ def main():
     ap.add_argument("--no-repair", action="store_true",
                     help="show raw frames: dead pixels and the chess "
                          "sub-page offset both left in")
+    ap.add_argument("--no-merge", action="store_true",
+                    help="skip the merged BAA+BAB panel")
+    ap.add_argument("--fovea", default=None,
+                    help="sx,sy,cx,cy - where BAB's view sits inside BAA's, "
+                         "e.g. from a hot-mug calibration. Default: measured "
+                         "from these scenes")
     args = ap.parse_args()
     global RAW
     RAW = args.no_repair
@@ -146,7 +153,7 @@ def main():
     # Dead-pixel masks over the whole run, same rule prepare_novis.py uses, so
     # the preview shows what the model will be trained on rather than something
     # prettier or uglier than the truth.
-    masks = {}
+    masks, offsets = {}, {}
     if not args.no_repair:
         for key, okkey in (("thermal", "thermalOk"), ("thermalFar", "thermalFarOk")):
             fr = [remove_subpage_offset(np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W))
@@ -158,10 +165,47 @@ def main():
                 at = ", ".join(f"({x},{y})" for y, x in zip(*np.where(masks[key])))
                 print(f"{'BAA' if key == 'thermal' else 'BAB'}: "
                       f"{n} dead pixel(s) at {at} - repaired in these previews")
+            by_scene = {}
+            for s in samples:
+                if s.get(key) is not None and s.get(okkey, True):
+                    by_scene.setdefault(s["sceneId"], []).append(remove_subpage_offset(
+                        np.asarray(s[key]).reshape(THERMAL_H, THERMAL_W)))
+            offsets[key] = pixel_offsets(list(by_scene.values()), masks[key])
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows_csv, cards = [], []
+
+    # First pass: each scene's cleaned, averaged frame from each sensor, so
+    # the fovea can be located once from the whole run before anything is drawn.
+    proc = {}
+    for sid in sorted(scenes):
+        rows = scene_samples(samples, sid)
+        proc[sid] = {}
+        for key, okkey, label in (("thermal", "thermalOk", "baa"),
+                                  ("thermalFar", "thermalFarOk", "bab")):
+            avg, frames = mean_thermal(rows, key, okkey)
+            if avg is None:
+                continue
+            if not args.no_repair and masks.get(key) is not None:
+                avg = repair_dead(avg - offsets[key], masks[key])
+            if not RAW:
+                avg = avg[:, ::-1]      # sensor frames are mirrored against the photo
+            proc[sid][label] = (avg, len(frames))
+
+    reg = None
+    if not args.no_merge:
+        pairs = [(p["baa"][0], p["bab"][0]) for p in proc.values()
+                 if "baa" in p and "bab" in p]
+        if args.fovea:
+            reg = tuple(float(v) for v in args.fovea.split(","))
+            print(f"merge: BAB placed at {reg} (from --fovea)")
+        elif pairs:
+            reg, r, fitted = register(pairs)
+            print(f"merge: BAB covers {reg[0]:.2f} x {reg[1]:.2f} of BAA's view, "
+                  f"centred at ({reg[2]:.2f}, {reg[3]:.2f}), match r = {r:.2f}"
+                  + ("" if fitted else " - too weak to locate it, using the "
+                     "nominal layout"))
 
     for sid in sorted(scenes):
         sc = scenes[sid]
@@ -173,20 +217,28 @@ def main():
         photo.convert("RGB").save(d / "photo.jpg", quality=92)
 
         panels, lo_hi = [], {}
-        for key, okkey, label in (("thermal", "thermalOk", "baa"),
-                                  ("thermalFar", "thermalFarOk", "bab")):
-            avg, frames = mean_thermal(rows, key, okkey)
-            if avg is None:
+        for label in ("baa", "bab"):
+            if label not in proc[sid]:
                 continue
-            if not args.no_repair and masks.get(key) is not None:
-                avg = repair_dead(avg, masks[key])
-            if not RAW:
-                avg = avg[:, ::-1]      # sensor frames are mirrored against the photo
+            avg, nfr = proc[sid][label]
             img, lo, hi = thermal_png(avg, args.scale)
             img.save(d / f"thermal_{label}.png")
-            lo_hi[label] = (lo, hi, len(frames))
+            lo_hi[label] = (lo, hi, nfr)
             if label == "baa":
                 panels.append(img)
+
+        # merged.png - BAA's whole view with BAB's sharper pixels in the middle,
+        # the outline marking where the fovea is
+        if reg is not None and "baa" in proc[sid] and "bab" in proc[sid]:
+            merged, _ = fuse(proc[sid]["baa"][0], proc[sid]["bab"][0], reg)
+            mimg, _, _ = thermal_png(merged, args.scale)
+            sx, sy, cx, cy = reg
+            ImageDraw.Draw(mimg).rectangle(
+                [(cx - sx / 2) * mimg.width, (cy - sy / 2) * mimg.height,
+                 (cx + sx / 2) * mimg.width, (cy + sy / 2) * mimg.height],
+                outline=(120, 220, 255), width=1)
+            mimg.save(d / "thermal_merged.png")
+            panels.append(mimg)
 
         # pair.jpg - photo beside BAA, the one image that exposes a framing slip
         if panels:
@@ -196,13 +248,14 @@ def main():
             left = photo.convert("RGB").resize((pw, ph), Image.LANCZOS)
             sc_h = max(left.height, th.height)
             tw = max(1, round(th.width * sc_h / th.height))
-            right = th.resize((tw, sc_h), Image.NEAREST)
+            rights = [im.resize((tw, sc_h), Image.NEAREST) for im in panels]
             left = left.resize((max(1, round(left.width * sc_h / left.height)),
                                 sc_h), Image.LANCZOS)
-            pair = Image.new("RGB", (left.width + right.width + 6, sc_h),
+            pair = Image.new("RGB", (left.width + len(rights) * (tw + 6), sc_h),
                              (16, 18, 24))
             pair.paste(left, (0, 0))
-            pair.paste(right, (left.width + 6, 0))
+            for i, im in enumerate(rights):
+                pair.paste(im, (left.width + 6 + i * (tw + 6), 0))
 
             son = [(s.get("sonarLeftMm"), s.get("sonarRightMm")) for s in rows]
             sl = [a for a, _ in son if a]
@@ -242,8 +295,9 @@ def main():
 
     _write_index(out, cards, rows_csv)
     print(f"\n{len(scenes)} scenes -> {out}")
-    print(f"open {out / 'index.html'} and scroll: photo on the left, BAA on "
-          f"the right. They should show the same room, framed the same way.")
+    print(f"open {out / 'index.html'} and scroll: photo, then BAA, then the "
+          f"merged frame. Photo and BAA should show the same room, framed the "
+          f"same way; the merged frame adds BAB's detail in the outlined centre.")
 
 
 def _write_index(out: Path, cards, rows_csv):

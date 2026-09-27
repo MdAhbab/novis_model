@@ -510,8 +510,12 @@ and obvious here — if a warm body sits centre-left in the photo and centre-rig
 in the thermal, that scene is misframed. Do this while the room can still be
 re-shot, not a month later.
 
+The third panel is the **merged frame**: BAA's whole view with BAB's sharper
+pixels in the outlined centre, like the sharp middle of an eye. It needs
+nothing extra at capture time - both sensors are already recorded.
+
 It also writes, per scene, `photo.jpg` + `thermal_baa.png` + `thermal_bab.png`
-+ `pair.jpg`, and a `scenes.csv` of every scene with its distance, lighting,
++ `thermal_merged.png` + `pair.jpg`, and a `scenes.csv` of every scene with its distance, lighting,
 note and temperature range.
 
 **3. Build the shards — the default is already BAA-only**
