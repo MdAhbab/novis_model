@@ -103,11 +103,28 @@ mid-session you find out that evening rather than in three months.
    | Sonar | two numbers that change as you move a hand in front |
    | Echo | **`echo returns` pill above 0** — the `spike` flag alone is not proof the echo works |
    | Thermal BAB | `sensor OK` — you do not frame to it, but it should be alive |
+   | Mixed | shows a picture once BAA and BAB both do — see below |
 
 6. **One quick look at BAA's panel:** wave your warm hand across the view. Does
    any dot stay frozen in place while everything else moves? If yes, BAA has a
    dead pixel too — **write down roughly where it is and carry on.** It will be
    repaired automatically at prepare time. It stops nothing today.
+
+7. **Left/right sanity check:** wave your hand to the **right** of the module.
+   It should light up on the **right** side of BAA's panel. If it lights up on
+   the left instead, the dashboard is not the current build — reflash it
+   before capturing; do not work around it by mentally flipping the picture,
+   since the recorded `.json` and every downstream number assume this check
+   already passed.
+
+**A third panel, "Mixed",** sits below BAB. It shows BAA's whole view with
+BAB's sharper pixels filling the outlined middle — like the sharp centre of
+one eye against its wide blurry edge, not stereo, there is no depth in it.
+It needs nothing from you; both sensors are already being read. Its own hint
+text has the details. It is a live *preview* only — it does not change what
+gets captured or stored, and it does not repair dead pixels the way
+`prepare_novis.py` does afterwards, so a known dead pixel (BAB's, for
+example) will still show there and correctly turns its status pill red.
 
 If BAA says `NOT FOUND`, power-cycle the module once. If it still says NOT
 FOUND, check the GPIO21/22 wiring — do not capture without BAA.

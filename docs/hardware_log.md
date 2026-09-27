@@ -871,7 +871,10 @@ moved right lit up the left of the panel. The `.json` deliberately keeps the
 sensor's raw order, so every capture ever made is in one orientation; the
 dashboard flips it for display and `prepare_novis.py` flips it before
 writing shards (`--raw-orientation` keeps it raw). Dead-pixel coordinates
-stay in raw sensor order.
+stay in raw sensor order. **Permanent, not a temporary debug flip** - it is
+part of the display path (`mirror()` inside `paintThermal`/`paintClean`,
+applied before anything else touches a frame), so every build from this
+commit on shows the corrected orientation without further action.
 
 **2. Chess-pattern offset between the two sub-pages.** In chess mode the
 MLX90640 reads alternate pixels as two sub-pages at different moments.
@@ -948,6 +951,32 @@ overwriting it. First run: 8 on BAA (mostly edge and corner pixels) and 13 on
 BAB. **Still open:** BAA's outer corners keep some chessboard, because its
 sub-page offset varies across the frame and the per-frame correction removes
 only its average.
+
+### The same merge, live on the dashboard (2026-09-27)
+
+The offline merge above needs a laptop and a finished session. The dashboard
+now also has a **Mixed** panel, next to BAA and BAB, doing the same thing
+live: BAA's whole view with BAB's sharper pixels in the outlined middle,
+redrawn every poll (~1.4 Hz) in the browser - no ESP32 cost, since all
+rendering already happens client-side. It uses the same fixed registration
+constant as the offline tool (`FOVEA = {sx:0.62, sy:0.48, cx:0.50, cy:0.47}`,
+duplicated in JS rather than shared, since the dashboard has no build step to
+import Python from) and the same chess (sub-page) correction, ported to JS
+and applied to **every** live thermal panel now, not just Mixed - BAA and
+BAB's own panels are visibly less checkerboarded than before as a result.
+
+It is a preview only: no dead-pixel repair (that needs a mask built from many
+scenes, which a single live frame does not have) and no biased-pixel
+correction. Checked instead on both sources directly - `drawMixed` flags
+"check dead pixel" if either BAA's or BAB's own frame is suspect, not only the
+merged result, because a single dead pixel can land diluted under the merged
+frame's own 6 C rule once bilinear resampling has blended it across several
+output pixels (measured: a synthetic 300 C spike came out only 1.8 C above
+its neighbours after merging - the per-source check exists because of exactly
+this). Confirmed against the four 2026-09-24 scenes: correctly flags BAB's
+known dead pixel on every one of them. The stored `.json` is unaffected
+either way - `thermal` and `thermalFar` are still written raw and separate;
+this panel only changes what is drawn on screen.
 
 ## 9. Looking further ahead
 

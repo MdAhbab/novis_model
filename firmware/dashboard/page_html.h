@@ -23,7 +23,7 @@ static const char PAGE_HTML[] PROGMEM = R"rawliteral(
     color-scheme: dark;
     --bg:#080a0e; --panel:#10141b; --line:#1d242f; --line2:#2a3340;
     --txt:#e6ecf3; --dim:#6b7a8d; --dim2:#8fa0b4;
-    --thermal:#ff9a3c; --sonar:#38bdf8; --sonar2:#f472b6; --echo:#a78bfa;
+    --thermal:#ff9a3c; --sonar:#38bdf8; --sonar2:#f472b6; --echo:#a78bfa; --mix:#5ee7ff;
     --good:#4ade80; --bad:#f87171;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
@@ -66,6 +66,7 @@ static const char PAGE_HTML[] PROGMEM = R"rawliteral(
   .panel>.bar{height:2px;background:var(--line2)}
   .panel.t>.bar{background:linear-gradient(90deg,var(--thermal),transparent 70%)}
   .panel.t2>.bar{background:linear-gradient(90deg,#c76b1f,transparent 70%)}
+  .panel.mix>.bar{background:linear-gradient(90deg,var(--mix),transparent 70%)}
   .panel.s>.bar{background:linear-gradient(90deg,var(--sonar),transparent 70%)}
   .panel.e>.bar{background:linear-gradient(90deg,var(--echo),transparent 70%)}
   .panel.d>.bar{background:linear-gradient(90deg,var(--good),transparent 70%)}
@@ -243,7 +244,33 @@ static const char PAGE_HTML[] PROGMEM = R"rawliteral(
             <div class="read"><span>hotspot</span><b id="tFarHot">--,--</b></div>
           </div>
           <canvas id="cvThermalFar" height="360"></canvas>
-          <div class="hint">Same sensor type, narrower lens, wired on a second I2C bus (GPIO33/25) so it cannot collide with BAA's fixed address. Best for the far end of a room BAA can't resolve. Which one is authoritative for a given scene is decided per-scene by distance, at prepare time (docs/data_collection_protocol.md 4.2c) &mdash; not fused here.</div>
+          <div class="hint">Same sensor type, narrower lens, wired on a second I2C bus (GPIO33/25) so it cannot collide with BAA's fixed address. Sharper in the middle of BAA's view than BAA itself is, but with a smaller field - see the Mixed panel below. Recorded on every sample either way, so a two-channel comparison stays possible later on the same captures.</div>
+        </div>
+      </section>
+
+      <!-- ============ MIXED (BAA periphery + BAB fovea, live preview) ============ -->
+      <section class="panel mix">
+        <div class="bar"></div>
+        <div class="head">
+          <h2>Mixed &mdash; BAA + BAB, live preview</h2>
+          <div class="sp"><span class="pill" id="mixStatus">&mdash;</span></div>
+        </div>
+        <div class="body">
+          <div class="reads">
+            <div class="read big t"><span>centre</span><b id="mixCentre">--.-</b></div>
+            <div class="read"><span>min</span><b id="mixMin">--.-</b></div>
+            <div class="read"><span>max</span><b id="mixMax">--.-</b></div>
+            <div class="read"><span>hotspot</span><b id="mixHot">--,--</b></div>
+          </div>
+          <canvas id="cvMixed" height="360"></canvas>
+          <div class="hint">BAA's whole view with BAB's sharper pixels filling the outlined middle,
+            like the sharp centre of one eye against its wide blurry edge &mdash; not stereo, the two
+            sensors sit ~1&nbsp;cm apart so there is no usable depth from this. Where BAB sits inside
+            BAA's view is a fixed number measured from the first real captures
+            (<code>scripts/fuse_thermal.py</code>, 2026-09-24, r&nbsp;=&nbsp;0.90); it will drift a
+            little if the mount is rebuilt. <b>Preview only</b> &mdash; the <code>.json</code> still
+            stores BAA and BAB raw and separate, exactly as read; this merge is redone properly,
+            from the stored files, by <code>scripts/export_scene_previews.py</code>.</div>
         </div>
       </section>
     </div>
@@ -547,6 +574,37 @@ function mirror(arr){
   return out;
 }
 
+// The two MLX90640 chess sub-pages are read at different moments, so
+// whatever shifts between the reads - the sensor's own drift, WiFi stealing
+// a cycle - lands on one colour of a chessboard laid over the whole frame.
+// Measured on the first real captures (2026-09-24): up to 8 C between the
+// two, on a par with a person's own contrast against a room. Each sub-page
+// samples the same scene at every other pixel, so for a real scene their
+// medians should agree; splitting the gap between them evenly leaves real
+// edges alone, which a blur would not. Same maths as
+// scripts/prepare_novis.py's remove_subpage_offset() - mirroring first or
+// this first makes no difference, since a mirrored checkerboard is still a
+// checkerboard: the two physical sub-pages just swap which one lands on the
+// "odd" squares.
+function subpageOffset(arr){
+  if(!arr) return arr;
+  const a=[], b=[];
+  for(let y=0;y<TH;y++) for(let x=0;x<TW;x++){
+    (((x+y)&1) ? a : b).push(arr[y*TW+x]);
+  }
+  const median = (v)=>{
+    const s=v.slice().sort((p,q)=>p-q), n=s.length;
+    return n%2 ? s[(n-1)/2] : (s[n/2-1]+s[n/2])/2;
+  };
+  const d = median(a) - median(b);
+  const out = new Array(TW*TH);
+  for(let y=0;y<TH;y++) for(let x=0;x<TW;x++){
+    const i = y*TW+x;
+    out[i] = arr[i] - (((x+y)&1) ? d/2 : -d/2);
+  }
+  return out;
+}
+
 function percentileBounds(arr, frac){
   const sorted = Array.prototype.slice.call(arr).sort((a,b)=>a-b);
   const n = sorted.length;
@@ -554,8 +612,25 @@ function percentileBounds(arr, frac){
   return [sorted[k], sorted[n-1-k]];
 }
 
+// Same >6C-past-the-99th-percentile rule paintClean uses for its own status
+// pill, exposed standalone so drawMixed can check BAA and BAB directly - a
+// single dead pixel can end up diluted well under 6C once fuseFrames' bilinear
+// resampling has blended it across up to four output pixels, so checking only
+// the merged result can miss a dead pixel that is very real in one sensor.
+function suspectDeadFrame(arr){
+  let lo=1e9, hi=-1e9;
+  for(let i=0;i<arr.length;i++){ if(arr[i]<lo) lo=arr[i]; if(arr[i]>hi) hi=arr[i]; }
+  const [pLo, pHi] = percentileBounds(arr, 0.01);
+  return (hi - pHi > 600) || (pLo - lo > 600);
+}
+
+// One sensor's raw frame -> canvas. Sizes/clears cv itself (so a missing
+// frame still clears a stale picture), then hands paintClean a display-space
+// array: mirrored and chess-corrected. Kept separate from paintClean because
+// the Mixed panel's array is already a composite of both sensors and has no
+// single "raw frame" of its own to mirror or chess-correct - it is built
+// display-space from the start and goes to paintClean directly.
 function paintThermal(cv, arr, withHotspot, respectLock){
-  if(respectLock === undefined) respectLock = true;
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
   if(!w || !h) return null;
@@ -566,7 +641,13 @@ function paintThermal(cv, arr, withHotspot, respectLock){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,cv.width,cv.height);
   if(!arr) return null;
-  arr = mirror(arr);     // hotspot coordinates below are therefore display coordinates
+  return paintClean(cv, subpageOffset(mirror(arr)), withHotspot, respectLock);
+}
+
+function paintClean(cv, arr, withHotspot, respectLock){
+  if(respectLock === undefined) respectLock = true;
+  const dpr = window.devicePixelRatio || 1;
+  const ctx = cv.getContext('2d');
 
   let lo=1e9, hi=-1e9;
   for(let i=0;i<arr.length;i++){
@@ -657,6 +738,117 @@ function drawThermalFar(arr){
   $('tFarMax').textContent = (r.hi/100).toFixed(1)+'°C';
   $('tFarHot').textContent = (r.hotIdx%TW)+','+Math.floor(r.hotIdx/TW);
   markDeadPixel($('tFarStatus'), r.suspectDead);
+}
+
+/* ---------- Mixed: BAA periphery + BAB fovea, live preview ---------- */
+
+// Where BAB's view sits inside BAA's, as a fraction of BAA's frame: width,
+// height, centre x, centre y. Fixed, not measured live - registration needs
+// several scenes' worth of contrast to fit reliably (see
+// scripts/fuse_thermal.py register()), which a single live frame does not
+// have. Measured from the first real captures (2026-09-24, 4 scenes,
+// r=0.90). Re-measure with more sessions, or a hot-mug calibration, and
+// update these four numbers if the mount is rebuilt.
+const FOVEA = {sx:0.62, sy:0.48, cx:0.50, cy:0.47};
+
+// arr, w, h are all in pixel units of the SAME grid (arr is TWxTH); xf, yf
+// are continuous coordinates into it. Clamped rather than wrapped, so
+// sampling just outside the fovea edge repeats its border instead of
+// reading the wrong side of the frame.
+function sampleBilinear(arr, w, h, xf, yf){
+  xf = Math.min(Math.max(xf,0), w-1); yf = Math.min(Math.max(yf,0), h-1);
+  const x0=Math.floor(xf), y0=Math.floor(yf);
+  const x1=Math.min(x0+1,w-1), y1=Math.min(y0+1,h-1);
+  const fx=xf-x0, fy=yf-y0;
+  const v00=arr[y0*w+x0], v10=arr[y0*w+x1], v01=arr[y1*w+x0], v11=arr[y1*w+x1];
+  return v00*(1-fx)*(1-fy)+v10*fx*(1-fy)+v01*(1-fx)*fy+v11*fx*fy;
+}
+
+// A and B are already display-space (mirrored, chess-corrected) TWxTH
+// frames. Returns a TWxTH frame on BAA's own grid: BAA's own value outside
+// reg's box, BAB's sharper pixels resampled into it inside, blended over a
+// feather zone so the seam is not a hard edge. BAB reads the same room a
+// couple of degrees warmer or cooler than BAA (its smaller pixels mix in
+// less background), so its contribution is levelled to BAA's local average
+// first - matching only the offset, not the extra contrast, which is real
+// detail, not an error.
+function fuseFrames(A, B, reg){
+  const {sx, sy, cx, cy} = reg;
+  const fx0=cx-sx/2, fx1=cx+sx/2, fy0=cy-sy/2, fy1=cy+sy/2;
+  const FEATHER = 1.5;   // BAB pixels of blend at the fovea edge
+
+  // BAB's offset from BAA, from samples safely inside the fovea (avoids a
+  // seam caused by the blend zone itself).
+  let accA=0, accB=0, n=0;
+  for(let oy=0;oy<TH;oy++) for(let ox=0;ox<TW;ox++){
+    const x=(ox+0.5)/TW, y=(oy+0.5)/TH;
+    if(x<fx0+0.03 || x>fx1-0.03 || y<fy0+0.03 || y>fy1-0.03) continue;
+    const u=(x-cx)/sx+0.5, v=(y-cy)/sy+0.5;
+    accB += sampleBilinear(B, TW, TH, u*TW-0.5, v*TH-0.5);
+    accA += A[oy*TW+ox]; n++;
+  }
+  const offset = n ? (accB/n - accA/n) : 0;
+
+  const out = new Array(TW*TH);
+  for(let oy=0;oy<TH;oy++){
+    for(let ox=0;ox<TW;ox++){
+      const aVal = A[oy*TW+ox];
+      const x=(ox+0.5)/TW, y=(oy+0.5)/TH;
+      const u=(x-cx)/sx+0.5, v=(y-cy)/sy+0.5;
+      const edge = Math.min(Math.min(u,1-u)*TW, Math.min(v,1-v)*TH);
+      const alpha = Math.max(0, Math.min(1, edge/FEATHER));
+      out[oy*TW+ox] = alpha<=0 ? aVal
+        : alpha*(sampleBilinear(B, TW, TH, u*TW-0.5, v*TH-0.5) - offset) + (1-alpha)*aVal;
+    }
+  }
+  return out;
+}
+
+// Live preview only - see the Mixed panel's own hint text. Needs both
+// sensors; if either is down there is nothing honest to merge, so the panel
+// says so rather than quietly falling back to BAA alone under a "Mixed"
+// label.
+function drawMixed(thermalArr, thermalFarArr){
+  const cv = $('cvMixed');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if(w && h && (cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr))){
+    cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr);
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!thermalArr || !thermalFarArr){
+    $('mixStatus').textContent = 'needs both sensors';
+    $('mixStatus').className = 'pill bad';
+    return;
+  }
+  const A = subpageOffset(mirror(thermalArr));
+  const B = subpageOffset(mirror(thermalFarArr));
+  const M = fuseFrames(A, B, FOVEA);
+  const r = paintClean(cv, M, true, false);
+
+  // Outline where BAB's pixels are actually used, so it reads as "sharper
+  // inside this box" rather than an unexplained soft edge.
+  const {sx, sy, cx, cy} = FOVEA;
+  ctx.strokeStyle = 'rgba(94,231,255,.85)'; ctx.lineWidth = 1.5*dpr;
+  ctx.strokeRect((cx-sx/2)*cv.width, (cy-sy/2)*cv.height, sx*cv.width, sy*cv.height);
+
+  // suspectDead here means BAB's dead pixel (or BAA's, if it ever gets one)
+  // is unrepaired - the live panel does not repair dead pixels the way
+  // scripts/prepare_novis.py does for stored data. Checked on the merged
+  // frame AND on each source directly (see suspectDeadFrame), since
+  // resampling can dilute a real dead pixel below the merged frame's own
+  // threshold.
+  if(r.suspectDead || suspectDeadFrame(A) || suspectDeadFrame(B)){
+    $('mixStatus').textContent = 'live · check dead pixel'; $('mixStatus').className = 'pill bad';
+  } else {
+    $('mixStatus').textContent = 'live'; $('mixStatus').className = 'pill good';
+  }
+  $('mixCentre').textContent = (M[12*TW+16]/100).toFixed(1)+'°C';
+  $('mixMin').textContent = (r.lo/100).toFixed(1)+'°C';
+  $('mixMax').textContent = (r.hi/100).toFixed(1)+'°C';
+  $('mixHot').textContent = (r.hotIdx%TW)+','+Math.floor(r.hotIdx/TW);
 }
 
 /* ---------- sonar rolling chart ---------- */
@@ -909,6 +1101,7 @@ async function poll(){
 
     drawThermal(d.thermalOk ? d.thermal : null);
     drawThermalFar(d.thermalFarOk ? d.thermalFar : null);
+    drawMixed(d.thermalOk ? d.thermal : null, d.thermalFarOk ? d.thermalFar : null);
     drawSonar();
     drawEcho(d.echo);
     drawPeaks();
@@ -1236,7 +1429,7 @@ function thermalCanvas(arr, w, h){
     im.data[i*4]=c[0]; im.data[i*4+1]=c[1]; im.data[i*4+2]=c[2]; im.data[i*4+3]=255;
   }
   sc.putImageData(im, 0, 0);
-  const out = document.createElement('canvas');   // (arr already mirrored by the caller)
+  const out = document.createElement('canvas');   // (arr already display-space: caller mirrors + chess-corrects it)
   out.width = w; out.height = h;
   const oc = out.getContext('2d');
   oc.imageSmoothingEnabled = S.smooth;
@@ -1264,7 +1457,7 @@ function saveScenePng(){
     ctx.fillStyle = '#10121a';
     ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, PW, H);
-    const t = thermalCanvas(mirror(m.arr), TWID, H);
+    const t = thermalCanvas(subpageOffset(mirror(m.arr)), TWID, H);
     ctx.drawImage(t.canvas, PW + GAP, 0);
 
     let sl = 0, sr = 0, ne = 0;
@@ -1325,7 +1518,11 @@ $('btnAuto').onclick = e => {
   e.target.className = S.auto?'on':'';
 };
 $('btnSmooth').onclick = e => { S.smooth=!S.smooth; e.target.className=S.smooth?'toggle on':'toggle';
-  if(S.last) drawThermal(S.last.thermal); };
+  if(S.last){
+    drawThermal(S.last.thermal);
+    // Mixed shares paintClean's smoothing with every other panel.
+    drawMixed(S.last.thermalOk ? S.last.thermal : null, S.last.thermalFarOk ? S.last.thermalFar : null);
+  } };
 $('btnLock').onclick = e => {
   S.lock = !S.lock;
   if(S.lock && S.last && S.last.thermal){
@@ -1410,6 +1607,7 @@ window.addEventListener('resize', ()=>{
   if(!S.last) return;
   drawThermal(S.last.thermalOk ? S.last.thermal : null);
   drawThermalFar(S.last.thermalFarOk ? S.last.thermalFar : null);
+  drawMixed(S.last.thermalOk ? S.last.thermal : null, S.last.thermalFarOk ? S.last.thermalFar : null);
   drawSonar(); drawEcho(S.last.echo); drawPeaks();
 });
 
