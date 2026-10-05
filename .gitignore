@@ -17,3 +17,11 @@ frontend/*.tsbuildinfo
 data/NOVIS_dataset_*/
 data/NOVIS_dataset_*.zip
 data/*.zip
+
+# Presentation: keep the build scripts, not the photos, renders or libraries
+presentation/*.pptx
+presentation/build/node_modules/
+presentation/build/img/
+presentation/build/render/
+presentation/build/patch*.py
+presentation/build/apply_theme.js
