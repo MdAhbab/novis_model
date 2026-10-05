@@ -54,6 +54,65 @@ def run(cmd):
     return out
 
 
+def refine_scene_table(path: Path, scenes: dict, split_of: dict,
+                       imputed: list, names_file: Path) -> list:
+    """Rewrite scenes.csv with readable names, codes and the split.
+
+    The ids typed on the phone during capture ("Chess booard1",
+    "Classroom 6(3rd)") stay in raw_scene_id, the key back to raw/ and to
+    scenes/<id>/. Readable location/view/description come from
+    scene_names.csv; an id missing there falls back to what was typed.
+    Codes are numbered per location in capture order (CAN-01, GAR-03, ...).
+    """
+    names = {}
+    if names_file.exists():
+        with open(names_file, encoding="utf-8") as fh:
+            names = {r["raw_scene_id"]: r for r in csv.DictReader(fh)}
+    with open(path, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    imputed_ids = {s for s, _ in imputed}
+
+    def key(r):
+        n = names.get(r["scene_id"], {})
+        return (n.get("location") or r["room"],
+                scenes[r["scene_id"]].get("capturedAt", ""))
+
+    seq: Counter = Counter()
+    out = []
+    for r in sorted(rows, key=key):
+        sid = r["scene_id"]
+        n = names.get(sid, {})
+        loc = n.get("location") or r["room"]
+        seq[loc] += 1
+        out.append({
+            "scene_code": f"{loc[:3].upper()}-{seq[loc]:02d}",
+            "location": loc,
+            "view": n.get("view") or r["room"],
+            "description": n.get("description") or r["note"],
+            "distance_m": r["distance_m"],
+            "distance_source": ("imputed" if sid in imputed_ids
+                                else "measured" if r["distance_m"] else ""),
+            "people": r["people"],
+            "lighting": r["lighting"],
+            "split": split_of.get(sid, "train"),
+            "samples": r["samples"],
+            "thermal_frames": r["baa_frames"],
+            "baa_min_c": r["baa_lo_c"],
+            "baa_max_c": r["baa_hi_c"],
+            "bab_recorded": r["bab_recorded"],
+            "photo_px": r["photo_px"],
+            "captured": scenes[sid].get("capturedAt", "")[:16].replace("T", " "),
+            "raw_scene_id": sid,
+            "folder": f"scenes/{sid}",
+        })
+    # utf-8-sig so Excel opens it with the right encoding
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(out[0]))
+        w.writeheader()
+        w.writerows(out)
+    return out
+
+
 def augment_train(src: Path, dst: Path, copies: int, seed: int = 0) -> int:
     """Label-preserving augmentations of real TRAIN shards.
 
@@ -265,12 +324,15 @@ def main():
                       and any(w in (sc.get("note") or "").lower() for w in ("human", "person"))
                       and "no human" not in (sc.get("note") or "").lower())
 
-    rows = list(csv.DictReader(open(out / "scenes.csv", encoding="utf-8")))
+    split_of = {sid: "val" if sid in held else "stress" if sid in stress else "train"
+                for sid in scenes}
+    rows = refine_scene_table(out / "scenes.csv", scenes, split_of, imputed,
+                              HERE / "scene_names.csv")
     table = "\n".join(
-        f"| {r['scene_id']} | {r['room']} | {r['distance_m'] or '—'} | {r['people']} | "
-        f"{r['lighting']} | {r['samples']} | "
-        f"{'val' if r['scene_id'] in held else 'stress' if r['scene_id'] in stress else 'train'} |"
-        for r in sorted(rows, key=lambda r: scenes[r['scene_id']].get('capturedAt', '')))
+        f"| {r['scene_code']} | {r['location']} | {r['view']} | {r['description']} | "
+        f"{r['distance_m'] or '—'} | {r['people']} | {r['lighting']} | "
+        f"{r['samples']} | {r['split']} | `{r['raw_scene_id']}` |"
+        for r in rows)
 
     readme = f"""# NOVIS real-capture dataset — v1
 
@@ -316,7 +378,7 @@ about 25 readings of the still scene, each holding:
 | `augmented_scenes/`, `index_augmented.html` | Flipped / re-exposed variants of the real scene images, labelled AUGMENTED |
 | `phone_png/` | Scene images saved on the phone during capture ({len(pngs)}) |
 | `scenes/<id>/` | `photo.jpg`, `thermal_baa.png`, `thermal_bab.png`, `thermal_merged.png`, `pair.jpg` |
-| `scenes.csv` | One row per scene |
+| `scenes.csv` | One row per scene: code, location, view, description, split, and the raw id |
 | `shards/train`, `val`, `stress` | `.npz` training arrays, real samples only |
 | `shards/train_augmented` | Augmented copies of **train only** |
 
@@ -363,8 +425,11 @@ never augmented.
 
 ## Scenes
 
-| Scene | Location | Distance (m) | People | Lighting | Samples | Split |
-|---|---|---|---|---|---|---|
+Codes are numbered per location in capture order. `raw_scene_id` is the id
+typed during capture, which names the folder under `scenes/` and the scene in `raw/`.
+
+| Code | Location | View | Description | Distance (m) | People | Lighting | Samples | Split | Raw id |
+|---|---|---|---|---|---|---|---|---|---|
 {table}
 """
     (out / "README.md").write_text(readme, encoding="utf-8")

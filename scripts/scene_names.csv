@@ -1,0 +1,32 @@
+raw_scene_id,location,view,description
+Canteen1,Canteen,Outdoor canteen,A person sitting on a chair
+CanteenScene2,Canteen,Canteen corner,"Table with chairs around it, a person sitting"
+CanteenScene3,Canteen,Canteen corner,"Table with chairs around it, a person sitting"
+CanteenScene4,Canteen,Canteen corner,"Table with chairs around it, a person sitting"
+Classroom,Classroom,Room 409,"Open classroom, many chairs, no person"
+Classroom1,Classroom,Room 409,"Open classroom, many chairs, a person present"
+Classroom2,Classroom,Classroom front,"PC and a wall behind, a person present"
+Classroom3,Classroom,Classroom front,"PC and a wall behind, no person"
+Classroom (last),Classroom,Classroom entrance,"Punch machine, switches, a door and a wall, no person"
+Classroom 4 (1 block),Classroom,Block 1,Corner of the first block
+Classroom 5 (2nd),Classroom,Block 2,Curtain with benches
+Classroom 5 (3rd),Classroom,Block 3,"A person among benches, wall behind"
+Classroom 6(3rd),Classroom,Block 3,"A person among benches, wall and wooden door behind"
+Chess booard,Game room,Chess table,People around the chess table
+Chess booard1,Game room,Chess table 2,People around the second chess table
+Chess booard2,Game room,Chess table,"People around the chess table, from 5 m"
+Game room 1,Game room,Carrom board,People playing carrom
+Game room 2,Game room,Carrom board,"People playing carrom, from further back"
+Game room 5,Game room,Game room overview,"A group of people playing, from 5 m"
+Garage1,Garage,Garage bay 1,A black car
+Garage2,Garage,Garage bay 2,AC unit
+Garage3,Garage,Garage bay 3,Corner with two cars
+Garage4,Garage,Garage bay 4,A person with a car behind
+Garage5,Garage,Garage bay 4,Water pump
+Garage6,Garage,Garage bay 5,Two bikes and a person
+Outdoor,Outdoor,Outdoor corridor,A person sitting on a bench
+Outdoor @09-20,Outdoor,Open seating area,"Many chairs, no person"
+Outdoor corridor 2,Outdoor,Corridor 1,"A bench in front of a wall, no person"
+Outdoor corridor 3,Outdoor,Corridor 2,"A bench, a wall, a glass door and a pillar, no person"
+Outdoor with human,Outdoor,Outdoor seating,A person among many chairs
+Outdoor4,Outdoor,Dark corner,A person sitting on a chair in a dark corner
