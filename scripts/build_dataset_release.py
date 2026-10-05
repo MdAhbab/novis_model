@@ -41,6 +41,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+from make_standalone_viewer import make_standalone  # noqa: E402
 from prepare_novis import load_captures  # noqa: E402
 
 
@@ -341,15 +342,15 @@ button{{background:var(--card);color:var(--fg);border:1px solid var(--line);bord
 .d{{padding:4px 14px 0}}
 .m{{display:flex;flex-wrap:wrap;gap:4px 14px;padding:4px 14px 10px;color:var(--mute);font-size:12.5px}}
 .m .raw{{font-family:ui-monospace,monospace}}
-.g{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 6px 6px}}
+.g{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:0 6px 6px}}
 figure{{margin:0;background:#000;border-radius:6px;overflow:hidden}}
 figure img{{display:block;width:100%;aspect-ratio:4/3;object-fit:contain}}
 figcaption{{font-size:12px;color:var(--mute);padding:4px 8px;background:var(--card)}}
 details{{border-top:1px solid #3a2f1d;background:#15120c}}
 summary{{cursor:pointer;padding:8px 14px;color:var(--aug)}}
-.aug{{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 6px 6px}}
+.aug{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:0 6px 6px}}
 .aug img{{aspect-ratio:auto}} .aug figcaption{{color:var(--aug);background:#15120c}}
-@media (max-width:760px){{.g{{grid-template-columns:1fr 1fr}} .aug{{grid-template-columns:1fr}}}}
+@media (max-width:760px){{.g{{grid-template-columns:repeat(2,minmax(0,1fr))}} .aug{{grid-template-columns:minmax(0,1fr)}}}}
 </style></head><body>
 <h1>NOVIS real-capture dataset — v1</h1>
 <div class="sub">Camera-free scene sensing: two thermal cameras, two ultrasonic rangers and an acoustic echo,
@@ -577,6 +578,9 @@ typed during capture, which names the folder under `scenes/` and the scene in `r
 """
     (out / "README.md").write_text(readme, encoding="utf-8")
     (out / "check_report.txt").write_text(check, encoding="utf-8")
+
+    # One file with every picture embedded, for sending on its own.
+    make_standalone(out)
 
     # A light copy for showing and sharing: everything a person looks at, no
     # training arrays (the shards are most of the size and need the repo).
