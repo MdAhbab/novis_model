@@ -191,23 +191,26 @@ def impute_missing(raw_dir: Path, filled_dir: Path) -> list:
     return done
 
 
-def augment_scene_images(scenes_dir: Path, dst: Path, seed: int = 0) -> list:
+def augment_scene_images(scenes_dir: Path, dst: Path, labels: dict,
+                         seed: int = 0) -> list:
     """Two labelled variants of every real scene's pictures, for viewing.
 
     Variants are derived, not captured: "flip" mirrors the photo and every
     thermal image together, "light" changes the photo's brightness and
     contrast by up to +/-15% (a different exposure of the same view) and
     leaves thermal alone, since lighting does not change temperature. Every
-    folder is named <scene>__aug_<kind> and every pair image is stamped
+    folder is named <code>__aug_<kind> and every pair image is stamped
     AUGMENTED so a variant cannot pass for a capture once copied elsewhere.
+    `labels` maps a raw scene id to (code, view).
     """
     from PIL import Image, ImageDraw, ImageEnhance, ImageOps
     rng = np.random.default_rng(seed)
     dst.mkdir(parents=True, exist_ok=True)
     made = []
     for sd in sorted(p for p in scenes_dir.iterdir() if p.is_dir()):
+        code, view = labels.get(sd.name, (sd.name, ""))
         for kind in ("flip", "light"):
-            od = dst / f"{sd.name}__aug_{kind}"
+            od = dst / f"{code}__aug_{kind}"
             od.mkdir(exist_ok=True)
             for name in ("photo.jpg", "thermal_baa.png", "thermal_bab.png", "thermal_merged.png"):
                 src = sd / name
@@ -228,10 +231,11 @@ def augment_scene_images(scenes_dir: Path, dst: Path, seed: int = 0) -> list:
                 pair = Image.new("RGB", (a.width + b.width + 6, a.height + 28), (16, 18, 24))
                 pair.paste(a, (0, 28)); pair.paste(b, (a.width + 6, 28))
                 ImageDraw.Draw(pair).text((8, 8), f"AUGMENTED ({kind}) - derived from real scene "
-                                          f"'{sd.name}', not a new capture", fill=(255, 180, 84))
+                                          f"{code} ({view}), not a new capture", fill=(255, 180, 84))
                 pair.save(od / "pair.jpg", quality=92)
             made.append((sd.name, kind, od.name))
-    rows = "\n".join(f'<div class="s"><div class="h"><b>{o}</b> <span>from {s} · {k}</span></div>'
+    made.sort(key=lambda m: m[2])
+    rows = "\n".join(f'<div class="s"><div class="h"><b>{o}</b> <span>from {labels.get(s, (s,))[0]} · {k}</span></div>'
                      f'<img src="augmented_scenes/{o}/pair.jpg" loading="lazy"></div>' for s, k, o in made)
     (dst.parent / "index_augmented.html").write_text(f"""<!doctype html><meta charset="utf-8">
 <title>NOVIS - augmented scene images</title>
@@ -245,6 +249,141 @@ real scenes in index.html - flipped, or re-exposed. Count the dataset by the rea
 scenes only.</div>
 {rows}""", encoding="utf-8")
     return made
+
+
+def write_release_index(path: Path, rows: list, aug: list, st: dict):
+    """The dataset's front page: counts, a scene table, then every scene.
+
+    Each scene shows its photo and the three thermal views as separate,
+    labelled images, and its augmented variants folded underneath it, marked
+    as derived so they are seen next to, never mistaken for, the capture.
+    """
+    from html import escape as e
+    aug_by = {}
+    for sid, kind, folder in aug:
+        aug_by.setdefault(sid, []).append((kind, folder))
+    locs = sorted({r["location"] for r in rows})
+    split_note = {"train": "train", "val": "val (held out)", "stress": f"stress (&gt;{st['r_use']:g} m)"}
+
+    overview = "\n".join(
+        f'<tr data-loc="{e(r["location"])}"><td><a href="#{r["scene_code"]}">{r["scene_code"]}</a></td>'
+        f'<td>{e(r["location"])}</td><td>{e(r["view"])}</td><td>{e(r["description"])}</td>'
+        f'<td class="r">{r["distance_m"] or "—"}{"*" if r["distance_source"] == "imputed" else ""}</td>'
+        f'<td class="r">{r["people"]}</td><td>{r["lighting"]}</td>'
+        f'<td class="r">{r["samples"]}</td><td><span class="b {r["split"]}">{r["split"]}</span></td></tr>'
+        for r in rows)
+
+    cards = []
+    for r in rows:
+        d = "scenes/" + e(r["raw_scene_id"])
+        imgs = [("photo.jpg", "Photo (target)"), ("thermal_baa.png", "Thermal BAA · wide"),
+                ("thermal_bab.png", "Thermal BAB · narrow"), ("thermal_merged.png", "Thermal merged")]
+        figs = "".join(f'<figure><img src="{d}/{f}" loading="lazy" alt="{e(r["scene_code"])} {c}">'
+                       f'<figcaption>{c}</figcaption></figure>' for f, c in imgs)
+        variants = aug_by.get(r["raw_scene_id"], [])
+        aug_html = ""
+        if variants:
+            aug_html = (f'<details><summary>Augmented variants ({len(variants)}) — derived from this '
+                        f'scene, not new captures</summary><div class="aug">'
+                        + "".join(f'<figure><img src="augmented_scenes/{e(o)}/pair.jpg" loading="lazy" '
+                                  f'alt="augmented {k}"><figcaption>AUGMENTED · {k}</figcaption></figure>'
+                                  for k, o in variants)
+                        + "</div></details>")
+        dist = (f'{r["distance_m"]} m' + (' (imputed)' if r["distance_source"] == "imputed" else '')
+                if r["distance_m"] else "no distance")
+        cards.append(
+            f'<section class="s" id="{r["scene_code"]}" data-loc="{e(r["location"])}">'
+            f'<div class="h"><b>{r["scene_code"]}</b><span class="t">{e(r["location"])} · {e(r["view"])}</span>'
+            f'<span class="b {r["split"]}">{split_note[r["split"]]}</span></div>'
+            f'<div class="d">{e(r["description"])}</div>'
+            f'<div class="m"><span>{dist}</span>'
+            f'<span>{r["people"]} {"person" if r["people"] == "1" else "people"}</span>'
+            f'<span>{r["lighting"]}</span><span>{r["samples"]} samples</span>'
+            f'<span>BAA {r["baa_min_c"]}–{r["baa_max_c"]} °C</span><span>{r["captured"]}</span>'
+            f'<span class="raw">raw id: {e(r["raw_scene_id"])}</span></div>'
+            f'<div class="g">{figs}</div>{aug_html}</section>')
+
+    buttons = '<button class="on" data-f="">All</button>' + "".join(
+        f'<button data-f="{e(l)}">{e(l)} ({sum(r["location"] == l for r in rows)})</button>' for l in locs)
+
+    path.write_text(f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NOVIS dataset v1</title>
+<style>
+:root{{--bg:#0d0f14;--card:#12151c;--line:#232735;--fg:#dee2eb;--mute:#8b93a7;--acc:#7cc4ff;
+  --train:#2d6a4f;--val:#7c5cbf;--stress:#a8572a;--aug:#ffcf8a}}
+*{{box-sizing:border-box}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px;
+  max-width:1280px;margin:auto}}
+h1{{font-size:24px;margin:0 0 2px}} h2{{font-size:17px;margin:32px 0 10px}}
+.sub{{color:var(--mute);margin-bottom:18px}}
+a{{color:var(--acc)}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}}
+.stat{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}}
+.stat b{{display:block;font-size:22px}} .stat span{{color:var(--mute);font-size:12px}}
+.stat.aug{{border-color:#5a4520}} .stat.aug b{{color:var(--aug)}}
+.links a{{margin-right:16px}}
+.tw{{overflow-x:auto;border:1px solid var(--line);border-radius:10px}}
+table{{border-collapse:collapse;width:100%;font-size:13px}}
+th,td{{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}
+td:nth-child(4){{white-space:normal;min-width:220px}}
+th{{background:var(--card);color:var(--mute);font-weight:600}} .r{{text-align:right}}
+.b{{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}}
+.b.train{{background:var(--train)}} .b.val{{background:var(--val)}} .b.stress{{background:var(--stress)}}
+.filters{{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}}
+button{{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:99px;
+  padding:5px 12px;font:inherit;cursor:pointer}} button.on{{background:var(--acc);color:#0d0f14;border-color:var(--acc)}}
+.s{{border:1px solid var(--line);border-radius:12px;margin-bottom:18px;background:var(--card);overflow:hidden;
+  scroll-margin-top:12px}}
+.h{{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:10px 14px 0}}
+.h b{{font-size:17px}} .h .t{{font-size:15px}}
+.d{{padding:4px 14px 0}}
+.m{{display:flex;flex-wrap:wrap;gap:4px 14px;padding:4px 14px 10px;color:var(--mute);font-size:12.5px}}
+.m .raw{{font-family:ui-monospace,monospace}}
+.g{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 6px 6px}}
+figure{{margin:0;background:#000;border-radius:6px;overflow:hidden}}
+figure img{{display:block;width:100%;aspect-ratio:4/3;object-fit:contain}}
+figcaption{{font-size:12px;color:var(--mute);padding:4px 8px;background:var(--card)}}
+details{{border-top:1px solid #3a2f1d;background:#15120c}}
+summary{{cursor:pointer;padding:8px 14px;color:var(--aug)}}
+.aug{{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 6px 6px}}
+.aug img{{aspect-ratio:auto}} .aug figcaption{{color:var(--aug);background:#15120c}}
+@media (max-width:760px){{.g{{grid-template-columns:1fr 1fr}} .aug{{grid-template-columns:1fr}}}}
+</style></head><body>
+<h1>NOVIS real-capture dataset — v1</h1>
+<div class="sub">Camera-free scene sensing: two thermal cameras, two ultrasonic rangers and an acoustic echo,
+each scene paired with a phone photo of the same view. Captured {e(st['days'])}.</div>
+<div class="stats">
+<div class="stat"><b>{st['scenes']}</b><span>real scenes (one photo each)</span></div>
+<div class="stat"><b>{st['samples']}</b><span>real sensor samples</span></div>
+<div class="stat"><b>{st['train']} / {st['val']} / {st['stress']}</b><span>train / val / stress samples</span></div>
+<div class="stat aug"><b>{len(aug)}</b><span>augmented scene images — derived, not captured</span></div>
+<div class="stat aug"><b>{st['aug_samples']}</b><span>augmented train samples — derived, not captured</span></div>
+</div>
+<div class="links"><a href="README.md">README</a><a href="scenes.csv">scenes.csv</a>
+<a href="index_augmented.html">All augmented images</a><a href="check_report.txt">Data check report</a></div>
+<p class="sub">Val = {e(st['val_label'])}, a location never seen in training. Stress = scenes beyond
+{st['r_use']:g} m, the sonar's range. Augmented data is shown separately and is not counted as scenes or samples.</p>
+
+<h2>Scenes</h2>
+<div class="filters">{buttons}</div>
+<div class="tw"><table><thead><tr><th>Code</th><th>Location</th><th>View</th><th>Description</th>
+<th class="r">Dist (m)</th><th class="r">People</th><th>Light</th><th class="r">Samples</th><th>Split</th></tr></thead>
+<tbody>{overview}</tbody></table></div>
+<p class="sub">* distance not entered at capture; filled from the scene's median sonar range.</p>
+
+<h2>Every scene</h2>
+{''.join(cards)}
+<script>
+document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {{
+  document.querySelectorAll('.filters button').forEach(x => x.classList.toggle('on', x === b));
+  const f = b.dataset.f;
+  document.querySelectorAll('[data-loc]').forEach(el => el.hidden = !!f && el.dataset.loc !== f);
+}});
+</script>
+</body></html>
+""", encoding="utf-8")
 
 
 def count_npz(d: Path) -> int:
@@ -287,21 +426,16 @@ def main():
     raw_glob = str(out / "raw_filled" / "*.json")
     run([py, HERE / "export_scene_previews.py", "--captures", raw_glob,
          "--out", out / "scenes"])
-    shutil.move(str(out / "scenes" / "index.html"), out / "index.html")
+    # The preview page names scenes by their typed ids; the release gets its
+    # own index.html (written below) that uses the refined names.
+    (out / "scenes" / "index.html").unlink()
     shutil.move(str(out / "scenes" / "scenes.csv"), out / "scenes.csv")
-    html = (out / "index.html").read_text(encoding="utf-8")
-    html = html.replace('<img src="', '<img src="scenes/')
-    (out / "index.html").write_text(html, encoding="utf-8")
 
     prep = run([py, HERE / "prepare_novis.py", "--captures", raw_glob,
                 "--out", out / "shards", "--r-use", args.r_use,
                 "--held-out-scenes", args.held_out_scenes])
     check = run([py, HERE / "check_novis_shards.py", out / "shards",
                  "--stress", out / "shards" / "stress"])
-
-    aug_scenes = augment_scene_images(out / "scenes", out / "augmented_scenes")
-    n_aug = augment_train(out / "shards" / "train",
-                          out / "shards" / "train_augmented", args.aug_copies)
 
     # ---- numbers for the README, taken from the data, not typed in ----
     scenes, samples = load_captures([raw_glob])
@@ -328,6 +462,15 @@ def main():
                 for sid in scenes}
     rows = refine_scene_table(out / "scenes.csv", scenes, split_of, imputed,
                               HERE / "scene_names.csv")
+    labels = {r["raw_scene_id"]: (r["scene_code"], r["view"]) for r in rows}
+    aug_scenes = augment_scene_images(out / "scenes", out / "augmented_scenes", labels)
+    n_aug = augment_train(out / "shards" / "train",
+                          out / "shards" / "train_augmented", args.aug_copies)
+    write_release_index(out / "index.html", rows, aug_scenes, {
+        "scenes": len(scenes), "samples": len(samples),
+        "train": n_tr, "val": n_va, "stress": n_st, "aug_samples": n_aug,
+        "val_label": args.held_out_label or ", ".join(sorted(held)),
+        "r_use": args.r_use, "days": ", ".join(days)})
     table = "\n".join(
         f"| {r['scene_code']} | {r['location']} | {r['view']} | {r['description']} | "
         f"{r['distance_m'] or '—'} | {r['people']} | {r['lighting']} | "
