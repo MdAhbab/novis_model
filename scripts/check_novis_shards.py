@@ -121,7 +121,13 @@ def describe(name: str, data: dict, n_files: int):
     none_valid = int(np.sum(valid.sum(axis=1) == 0))
     print(f"  sonar: {n - none_valid}/{n} samples have at least one valid "
           f"range ({100.0 * none_valid / max(n, 1):.1f}% blind)")
-    if none_valid > 0.5 * n:
+    if none_valid > 0.5 * n and name.startswith("stress"):
+        # The stress split is, by construction, scenes past --r-use, which is
+        # normally set to the HC-SR04's own 4 m limit - sonar going blind
+        # there is the expected reason those scenes are in it, not a fault.
+        warn(f"{name}: {100.0 * none_valid / n:.0f}% of samples have no valid "
+             f"sonar range - expected past the sonar's reach")
+    elif none_valid > 0.5 * n:
         fail(f"{name}: over half the samples have no valid sonar range - "
              f"check the sensors, not the model")
     elif none_valid > 0.2 * n:

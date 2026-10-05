@@ -336,10 +336,38 @@ def load_captures(patterns) -> tuple:
                 f"{f} has no scenes block - it was exported by a dashboard "
                 f"build older than the ground-truth photo support, and has "
                 f"no images to train against")
+        # The same scene id can be typed for two different scenes in different
+        # browser sessions (seen on 2026-09-28: two unrelated "Outdoor" scenes,
+        # two hours apart). Keeping only the first photo would silently pair the
+        # second scene's samples with the first scene's photo. A repeated id
+        # with a DIFFERENT photo is therefore a different scene: it is renamed
+        # "<id> @HH-MM" from its own capture time, and this file's samples are
+        # remapped to the new name. A repeated id with the SAME photo is just
+        # the same scene appearing again in a later, cumulative download.
+        rename = {}
         for sid, sc in file_scenes.items():
             if sid in scenes:
+                if scenes[sid].get("photo") == sc.get("photo"):
+                    continue
+                prior = next((k for k in scenes if k.startswith(sid + " @")
+                              and scenes[k].get("photo") == sc.get("photo")), None)
+                if prior:                       # already renamed by an earlier file
+                    rename[sid] = prior
+                    continue
+                stamp = str(sc.get("capturedAt", ""))[11:16].replace(":", "-") or "dup"
+                new = f"{sid} @{stamp}"
+                while new in scenes:
+                    new += "'"
+                rename[sid] = new
+                scenes[new] = sc
+                print(f"  NOTE: scene id {sid!r} reused for a different photo in "
+                      f"{Path(f).name} - kept apart as {new!r}")
                 continue
             scenes[sid] = sc
+        if rename:
+            doc["samples"] = [dict(s, sceneId=rename[s["sceneId"]])
+                              if s.get("sceneId") in rename else s
+                              for s in doc["samples"]]
         # Echo recorded before the capture fix (dashboard meta without
         # echo.capture == "aligned-v2") began every window with 384-742 zero
         # samples and never contained the chirp - it is not an echo at all.
